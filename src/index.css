@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    margin: 0;
+    background-color: #0b1326;
+    color: #dae2fd;
+  }
+}
+
+@layer components {
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+
+  .material-symbols-filled {
+    font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+}
+
+@layer utilities {
+  /* Custom scrollbar for industrial feel */
+  .scrollbar-industrial::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-industrial::-webkit-scrollbar-track {
+    background: #0b1326;
+  }
+  .scrollbar-industrial::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+  }
+  .scrollbar-industrial::-webkit-scrollbar-thumb:hover {
+    background: #06b6d4;
+  }
+
+  /* Industrial dot grid background */
+  .industrial-grid {
+    background-image: radial-gradient(#1e293b 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+}
