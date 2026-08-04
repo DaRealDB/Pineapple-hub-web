@@ -1,5 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import mqtt from 'mqtt';
+import {
+  TOPIC_SCALE1_WILDCARD,
+  TOPIC_SCALE1_AVAILABILITY,
+  TOPIC_SCALE1_DATA,
+  TOPIC_VISION_ZONE1,
+  TOPIC_VISION_ZONE2,
+  TOPIC_HMI_STATE_WILDCARD,
+  hmiSetTopic,
+} from '../constants/mqttTopics';
 
 /**
  * MQTT connection states.
@@ -8,16 +17,19 @@ import mqtt from 'mqtt';
 
 /**
  * Hook: connects to the Aedes MQTT broker via WebSocket, subscribes to
- * pineapple/scale1/#, and exposes live telemetry + connection state to
- * consuming components.
+ * scale telemetry, vision zones, and HMI switch states. Exposes live
+ * telemetry + derived validity + connection state to consuming components.
  *
- * Per README.md MQTT contract:
+ * Per forge.md topic contracts:
  *   - pineapple/scale1/availability (retained, QoS 1): "online" | "offline"
- *   - pineapple/scale1/data (not retained, QoS 1): JSON { weight_g, status, grade, ts }
+ *   - pineapple/scale1/data (not retained, QoS 1): JSON { weight_g, grade, status, ts }
+ *   - pineapple/vision/zone1 (not retained, QoS 1): "occupied" | "clear"
+ *   - pineapple/vision/zone2 (not retained, QoS 1): "occupied" | "clear"
+ *   - pineapple/hmi/{switchId}/state (not retained, QoS 1): "on" | "off"
  *
  * Never-fallback rule: if status.hx711_fault or status.eth_or_wifi_issue
- * is true, data is marked invalid and consuming components must show the
- * fault state — never a stale/frozen number.
+ * is true, OR Zone 1 is occupied, data is marked invalid and consuming
+ * components must show the fault state — never a stale/frozen number.
  */
 export default function useMqtt() {
   const brokerUrl =
@@ -44,13 +56,40 @@ export default function useMqtt() {
     /** @type {number | null} */ (null)
   );
 
-  /** Whether the current weight/grade reading should be treated as valid live data. */
+  /* ── AI camera zone state (forge.md §3) ── */
+  const [zone1, setZone1] = useState(
+    /** @type {'occupied' | 'clear' | null} */ (null)
+  );
+  const [zone2, setZone2] = useState(
+    /** @type {'occupied' | 'clear' | null} */ (null)
+  );
+
+  /* ── HMI switch state mirror (forge.md §4) ── */
+  const [switchStates, setSwitchStates] = useState(
+    /** @type {Record<string, 'on' | 'off'>} */ ({})
+  );
+
+  /**
+   * Whether the current weight/grade reading should be treated as valid
+   * live data. Combines: MQTT connected + scale online + no HX711 fault +
+   * no network issue + Zone 1 clear (forklift not in scale area).
+   *
+   * Zone 1 gating reuses the existing fault-state pattern per forge.md §3:
+   * while occupied, weight is treated exactly like hx711_fault — invalid.
+   */
   const dataValid =
     connectionState === 'connected' &&
     availability === 'online' &&
     status !== null &&
     !status.hx711_fault &&
-    !status.eth_or_wifi_issue;
+    !status.eth_or_wifi_issue &&
+    zone1 !== 'occupied';
+
+  /**
+   * Whether the capture sequence is armed (Zone 2 occupied).
+   * Per forge.md §3: Zone 2 presence starts the crate capture sequence.
+   */
+  const captureArmed = zone2 === 'occupied';
 
   const handleConnect = useCallback(() => {
     setConnectionState('connected');
@@ -69,12 +108,13 @@ export default function useMqtt() {
   const handleMessage = useCallback((topic, payload) => {
     const str = payload.toString();
 
-    if (topic === 'pineapple/scale1/availability') {
+    /* ── Scale telemetry ── */
+    if (topic === TOPIC_SCALE1_AVAILABILITY) {
       setAvailability(str === 'online' ? 'online' : 'offline');
       return;
     }
 
-    if (topic === 'pineapple/scale1/data') {
+    if (topic === TOPIC_SCALE1_DATA) {
       try {
         const data = JSON.parse(str);
 
@@ -98,6 +138,29 @@ export default function useMqtt() {
       } catch (e) {
         console.error('[MQTT] Failed to parse data payload:', e);
       }
+      return;
+    }
+
+    /* ── Vision zones (forge.md §3) ── */
+    if (topic === TOPIC_VISION_ZONE1) {
+      setZone1(str === 'occupied' ? 'occupied' : 'clear');
+      return;
+    }
+
+    if (topic === TOPIC_VISION_ZONE2) {
+      setZone2(str === 'occupied' ? 'occupied' : 'clear');
+      return;
+    }
+
+    /* ── HMI switch state (forge.md §4) ──
+       Topic pattern: pineapple/hmi/{switchId}/state → "on" | "off" */
+    if (topic.startsWith('pineapple/hmi/') && topic.endsWith('/state')) {
+      const switchId = topic.replace('pineapple/hmi/', '').replace('/state', '');
+      setSwitchStates((prev) => ({
+        ...prev,
+        [switchId]: str === 'on' ? 'on' : 'off',
+      }));
+      return;
     }
   }, []);
 
@@ -113,10 +176,23 @@ export default function useMqtt() {
 
     client.on('connect', () => {
       handleConnect();
-      client.subscribe('pineapple/scale1/#', { qos: 1 }, (err) => {
-        if (err) {
-          console.error('[MQTT] Subscribe error:', err);
-        }
+
+      /* Scale telemetry (existing) */
+      client.subscribe(TOPIC_SCALE1_WILDCARD, { qos: 1 }, (err) => {
+        if (err) console.error('[MQTT] Subscribe scale error:', err);
+      });
+
+      /* Vision zones (forge.md §3) */
+      client.subscribe(TOPIC_VISION_ZONE1, { qos: 1 }, (err) => {
+        if (err) console.error('[MQTT] Subscribe zone1 error:', err);
+      });
+      client.subscribe(TOPIC_VISION_ZONE2, { qos: 1 }, (err) => {
+        if (err) console.error('[MQTT] Subscribe zone2 error:', err);
+      });
+
+      /* HMI switch states (forge.md §4) — wildcard for all switches */
+      client.subscribe(TOPIC_HMI_STATE_WILDCARD, { qos: 1 }, (err) => {
+        if (err) console.error('[MQTT] Subscribe hmi error:', err);
       });
     });
 
@@ -129,20 +205,50 @@ export default function useMqtt() {
     };
   }, [brokerUrl, handleConnect, handleClose, handleError, handleMessage]);
 
+  /* ── Switch command publisher (forge.md §4) ── */
+
+  /**
+   * Publish a switch command to the hardware.
+   * @param {string} switchId — e.g. "switch_1"
+   * @param {'on' | 'off'} command
+   */
+  const publishSwitchCommand = useCallback((switchId, command) => {
+    if (clientRef.current?.connected) {
+      const topic = hmiSetTopic(switchId);
+      clientRef.current.publish(topic, command, { qos: 1 });
+    } else {
+      console.warn('[MQTT] Cannot publish switch command — not connected');
+    }
+  }, []);
+
   return {
     /** @type {MqttConnectionState} */
     connectionState,
     /** @type {'online' | 'offline' | null} */
     availability,
-    /** Raw weight in grams from firmware, or null. Convert to kg for display. */
+    /** Raw weight in grams from firmware, or null. NOW REPRESENTS CRATE TOTAL. */
     weightG,
-    /** Raw grade string from firmware: "light" | "grade_1" | "heavy" | "invalid" | null */
+    /** Raw grade string from firmware, or null. */
     grade,
     /** Sensor/network fault booleans, or null if never received. */
     status,
     /** Free-running millis() counter from firmware — livelock detection only. */
     ts,
-    /** True when connected, online, and no sensor/network faults. */
+    /** True when connected, online, no sensor/network faults, AND Zone 1 clear. */
     dataValid,
+
+    /* ── Zone state (forge.md §3) ── */
+    /** @type {'occupied' | 'clear' | null} */
+    zone1,
+    /** @type {'occupied' | 'clear' | null} */
+    zone2,
+    /** True when Zone 2 is occupied — capture sequence armed. */
+    captureArmed,
+
+    /* ── Switch state + command (forge.md §4) ── */
+    /** @type {Record<string, 'on' | 'off'>} */
+    switchStates,
+    /** Publish a switch command to the hardware. */
+    publishSwitchCommand,
   };
 }

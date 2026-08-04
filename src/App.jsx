@@ -6,6 +6,7 @@ import OperationsLog from './screens/OperationsLog';
 import Analytics from './screens/Analytics';
 import DeviceManagement from './screens/DeviceManagement';
 import Reports from './screens/Reports';
+import OCRPipeline from './screens/OCRPipeline';
 import useMqtt from './hooks/useMqtt';
 
 /**
@@ -26,6 +27,11 @@ export default function App() {
     grade,
     status,
     dataValid,
+    zone1,
+    zone2,
+    captureArmed,
+    switchStates,
+    publishSwitchCommand,
   } = useMqtt();
 
   const topBarVariant = getTopBarVariant(location.pathname);
@@ -37,6 +43,11 @@ export default function App() {
     grade,
     status,
     dataValid,
+    zone1,
+    zone2,
+    captureArmed,
+    switchStates,
+    publishSwitchCommand,
   };
 
   return (
@@ -64,6 +75,10 @@ export default function App() {
           <Route
             path="/reports"
             element={<Reports mqtt={mqttContext} />}
+          />
+          <Route
+            path="/ocr-pipeline"
+            element={<OCRPipeline />}
           />
         </Routes>
       </main>

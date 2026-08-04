@@ -2,9 +2,11 @@
  * Reusable status/grade pill component.
  * Props per BUILD_SPEC.md Shared Component Library > StatusPill.
  *
- * Variants: online | offline | verified | flagged | pending | grade-a | grade-b | rejected
+ * Variants: online | offline | verified | flagged | pending
+ *           | grade-a | grade-b | rejected
+ *           | seed | occupied | clear | armed
  *
- * @param {{ variant: 'online' | 'offline' | 'verified' | 'flagged' | 'pending' | 'grade-a' | 'grade-b' | 'rejected', label?: string, className?: string }} props
+ * @param {{ variant: string, label?: string, className?: string }} props
  */
 export default function StatusPill({ variant, label, className = '' }) {
   const variantStyles = {
@@ -24,9 +26,18 @@ export default function StatusPill({ variant, label, className = '' }) {
       'border-on-surface-variant text-on-surface-variant',
     rejected:
       'bg-error/10 border-error text-error',
+    /* New variants for mock-data indicators and zone gating */
+    seed:
+      'bg-tertiary/10 border-tertiary/30 text-tertiary',
+    occupied:
+      'bg-[#EF4444]/10 border-[#EF4444]/30 text-[#EF4444]',
+    clear:
+      'bg-[#10B981]/10 border-[#10B981]/30 text-[#10B981]',
+    armed:
+      'bg-primary/10 border-primary/30 text-primary',
   };
 
-  const dotVariants = ['online', 'offline'];
+  const dotVariants = ['online', 'offline', 'occupied', 'clear', 'armed'];
 
   const showDot = dotVariants.includes(variant);
 
@@ -37,7 +48,13 @@ export default function StatusPill({ variant, label, className = '' }) {
       {showDot && (
         <span
           className={`w-2 h-2 rounded-full mr-1.5 ${
-            variant === 'online' ? 'bg-[#10B981]' : 'bg-[#EF4444]'
+            variant === 'online' || variant === 'clear'
+              ? 'bg-[#10B981]'
+              : variant === 'occupied'
+                ? 'bg-[#EF4444]'
+                : variant === 'armed'
+                  ? 'bg-primary'
+                  : 'bg-[#EF4444]'
           }`}
         />
       )}
