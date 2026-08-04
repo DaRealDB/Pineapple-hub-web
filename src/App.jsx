@@ -6,8 +6,10 @@ import OperationsLog from './screens/OperationsLog';
 import Analytics from './screens/Analytics';
 import DeviceManagement from './screens/DeviceManagement';
 import Reports from './screens/Reports';
+import SimpleOCR from './screens/SimpleOCR';
 import OCRPipeline from './screens/OCRPipeline';
 import useMqtt from './hooks/useMqtt';
+import useWebSocket from './hooks/useWebSocket';
 
 /**
  * TopBar variant mapping per BUILD_SPEC.md Global Shell > TopBar.
@@ -15,45 +17,47 @@ import useMqtt from './hooks/useMqtt';
 function getTopBarVariant(pathname) {
   if (pathname === '/devices') return 'devices';
   if (pathname === '/reports') return 'reports';
+  if (pathname === '/ocr-pipeline') return 'ocr-pipeline';
   return 'default';
 }
 
 export default function App() {
   const location = useLocation();
+
   const {
-    connectionState,
+    connectionState: mqttConnectionState,
     availability,
     weightG,
     grade,
     status,
     dataValid,
-    zone1,
-    zone2,
-    captureArmed,
-    switchStates,
-    publishSwitchCommand,
   } = useMqtt();
+
+  const {
+    connectionState: wsConnectionState,
+    pipelineStatus,
+  } = useWebSocket();
 
   const topBarVariant = getTopBarVariant(location.pathname);
 
   const mqttContext = {
-    connectionState,
+    connectionState: mqttConnectionState,
     availability,
     weightG,
     grade,
     status,
     dataValid,
-    zone1,
-    zone2,
-    captureArmed,
-    switchStates,
-    publishSwitchCommand,
+  };
+
+  const wsContext = {
+    connectionState: wsConnectionState,
+    pipelineStatus,
   };
 
   return (
     <div className="min-h-screen bg-background">
-      <Sidebar availability={availability} />
-      <TopBar variant={topBarVariant} connectionState={connectionState} />
+      <Sidebar availability={availability} pipelineStatus={pipelineStatus} />
+      <TopBar variant={topBarVariant} connectionState={mqttConnectionState} pipelineConnectionState={wsConnectionState} />
       <main className="ml-60 p-lg min-h-[calc(100vh-64px)] bg-background">
         <Routes>
           <Route
@@ -75,6 +79,10 @@ export default function App() {
           <Route
             path="/reports"
             element={<Reports mqtt={mqttContext} />}
+          />
+          <Route
+            path="/simple-ocr"
+            element={<SimpleOCR />}
           />
           <Route
             path="/ocr-pipeline"

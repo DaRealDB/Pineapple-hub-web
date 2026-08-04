@@ -1,32 +1,27 @@
 /**
  * Seed / mock data used ONLY as placeholder state when the MQTT broker is
- * unreachable. All values use CRATE/BIN semantics (forge.md §2) — weights
- * represent a full crate of multiple pineapples, not individual fruit.
- *
- * Any field that has a real MQTT source MUST be replaced by live data once
- * the connection is established. Every consumer MUST display a visible
- * "SEED DATA" indicator (via StatusPill variant="seed" or equivalent) when
- * rendering these values instead of live MQTT data.
+ * unreachable. All values match BUILD_SPEC.md verbatim. Any field that has
+ * a real MQTT source MUST be replaced by live data once the connection is
+ * established — these values are visibly labeled as seed/demo in the UI.
  */
 
-/** Crate weight in grams — placeholder representing a typical crate (~14 kg) */
-export const SEED_WEIGHT_G = 14200; // grams (14.20 kg)
+export const SEED_WEIGHT_G = 1420; // grams (1.42 kg)
 
-export const SEED_GRADE = 'PENDING_FORMULA';
+export const SEED_GRADE = 'grade_1';
 
-export const SEED_GRADE_DISPLAY = 'FORMULA PENDING';
+export const SEED_GRADE_DISPLAY = 'GRADE 1 (SUB-GRADE B)';
 
 export const SEED_THROUGHPUT = {
-  cratesProcessed: 12402,
+  unitsProcessed: 12402,
   yieldAccuracy: 0.9984,
   avgCycleTime: 0.42,
 };
 
 export const SEED_BATCH_LOG = [
-  { batchId: '#9422', crateWeightKg: 14.20, timestamp: '10:42:01', status: 'Current' },
-  { batchId: '#9421', crateWeightKg: 13.90, timestamp: '10:41:59', status: 'Archive' },
-  { batchId: '#9420', crateWeightKg: 15.10, timestamp: '10:41:56', status: 'Archive' },
-  { batchId: '#9419', crateWeightKg: 14.80, timestamp: '10:41:54', status: 'Archive' },
+  { batchId: '#9422', weightKg: 1.42, timestamp: '10:42:01', status: 'Current' },
+  { batchId: '#9421', weightKg: 1.39, timestamp: '10:41:59', status: 'Archive' },
+  { batchId: '#9420', weightKg: 1.51, timestamp: '10:41:56', status: 'Archive' },
+  { batchId: '#9419', weightKg: 1.48, timestamp: '10:41:54', status: 'Archive' },
 ];
 
 export const SEED_DEVICES = [
@@ -57,13 +52,13 @@ export const SEED_DEVICES = [
 ];
 
 export const SEED_OPERATIONS_LOG = [
-  { ts: '2024-05-24 14:22:01', batchId: 'PN-BKD-1029', scaleId: 'SC-004-B', crateWeightKg: 14.25, grade: 'grade-a', audit: 'verified' },
-  { ts: '2024-05-24 14:21:44', batchId: 'PN-BKD-1029', scaleId: 'SC-004-B', crateWeightKg: 13.90, grade: 'grade-a', audit: 'verified' },
-  { ts: '2024-05-24 14:21:29', batchId: 'PN-BKD-1028', scaleId: 'SC-004-B', crateWeightKg: 9.40, grade: 'rejected', audit: 'flagged' },
-  { ts: '2024-05-24 14:21:12', batchId: 'PN-BKD-1028', scaleId: 'SC-004-B', crateWeightKg: 15.50, grade: 'grade-b', audit: 'verified' },
-  { ts: '2024-05-24 14:20:55', batchId: 'PN-BKD-1028', scaleId: 'SC-004-B', crateWeightKg: 14.10, grade: 'grade-a', audit: 'verified' },
-  { ts: '2024-05-24 14:20:30', batchId: 'PN-BKD-1028', scaleId: 'SC-004-B', crateWeightKg: 12.85, grade: 'grade-b', audit: 'verified' },
-  { ts: '2024-05-24 14:20:15', batchId: 'PN-BKD-1027', scaleId: 'SC-004-B', crateWeightKg: 16.05, grade: 'grade-a', audit: 'pending' },
+  { ts: '2024-05-24 14:22:01', batchId: 'PN-BKD-1029', scaleId: 'SC-004-B', weightKg: 1.425, grade: 'grade-a', audit: 'verified' },
+  { ts: '2024-05-24 14:21:44', batchId: 'PN-BKD-1029', scaleId: 'SC-004-B', weightKg: 1.390, grade: 'grade-a', audit: 'verified' },
+  { ts: '2024-05-24 14:21:29', batchId: 'PN-BKD-1028', scaleId: 'SC-004-B', weightKg: 0.940, grade: 'rejected', audit: 'flagged' },
+  { ts: '2024-05-24 14:21:12', batchId: 'PN-BKD-1028', scaleId: 'SC-004-B', weightKg: 1.550, grade: 'grade-b', audit: 'verified' },
+  { ts: '2024-05-24 14:20:55', batchId: 'PN-BKD-1028', scaleId: 'SC-004-B', weightKg: 1.410, grade: 'grade-a', audit: 'verified' },
+  { ts: '2024-05-24 14:20:30', batchId: 'PN-BKD-1028', scaleId: 'SC-004-B', weightKg: 1.285, grade: 'grade-b', audit: 'verified' },
+  { ts: '2024-05-24 14:20:15', batchId: 'PN-BKD-1027', scaleId: 'SC-004-B', weightKg: 1.605, grade: 'grade-a', audit: 'pending' },
 ];
 
 export const SEED_RECENT_EXPORTS = [

@@ -14,7 +14,6 @@ Pineapple Hub Master is an enhanced real-time monitoring and management dashboar
 
 ### Frontend Setup
 ```bash
-cd frontend
 npm install
 npm run dev
 ```
@@ -34,15 +33,32 @@ createdb ocr_pipeline
 # Tables are created automatically on first run
 ```
 
+### Running the Application
+
+**Option A - Run both frontend and backend together:**
+```bash
+npm run dev:all
+```
+
+**Option B - Run separately:**
+```bash
+# Terminal 1 - Frontend
+npm run dev
+
+# Terminal 2 - Backend
+cd backend
+python main.py
+```
+
 ## Configuration
 
 ### Frontend (.env)
 ```bash
-# Original MQTT Configuration
+# MQTT Configuration
 VITE_MQTT_WS_URL=ws://192.168.1.10:9001
 VITE_NODE_RED_BASE_URL=http://localhost:1880
 
-# New OCR Pipeline Configuration
+# OCR Pipeline Configuration
 VITE_OCR_WS_URL=ws://localhost:8000
 VITE_OCR_API_URL=http://localhost:8000
 ```
@@ -98,27 +114,31 @@ WEBSOCKET_HOST=0.0.0.0
 ### Project Structure
 ```
 Pineapple-hub-web/
-├── frontend/                   # React frontend
-│   ├── src/                   # React source code
-│   │   ├── components/        # UI components
-│   │   ├── screens/           # Screen components
-│   │   ├── hooks/             # React hooks
-│   │   └── utils/             # Utilities
-│   ├── public/               # Static assets
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.js
-│   └── tailwind.config.js
+├── src/                        # React frontend
+│   ├── components/            # UI components
+│   ├── screens/               # Screen components
+│   ├── hooks/                 # React hooks
+│   ├── utils/                 # Utilities
+│   ├── data/                  # Mock data
+│   ├── constants/             # Constants
+│   ├── App.jsx                # Main app component
+│   ├── main.jsx               # Entry point
+│   └── index.css              # Global styles
 ├── backend/                    # FastAPI backend
 │   ├── api/                   # API endpoints
 │   ├── core/                  # Business logic
 │   ├── database/              # Database layer
 │   ├── websocket/             # WebSocket server
 │   └── utils/                 # Utilities
-└── docs/                      # Documentation
-    ├── DATABASE_SCHEMA.md     # Database schema
-    ├── BACKEND_SETUP.md       # Backend setup
-    └── INTEGRATION_GUIDE.md   # Integration guide
+├── docs/                      # Documentation
+│   ├── DATABASE_SCHEMA.md     # Database schema
+│   ├── BACKEND_SETUP.md       # Backend setup
+│   └── INTEGRATION_GUIDE.md   # Integration guide
+├── index.html                 # HTML entry point
+├── package.json               # Node.js dependencies
+├── vite.config.js             # Vite configuration
+├── tailwind.config.js         # Tailwind CSS configuration
+└── postcss.config.js          # PostCSS configuration
 ```
 
 ## Key Features
@@ -149,6 +169,7 @@ Pineapple-hub-web/
 - `/analytics` - Performance Analytics
 - `/devices` - Device Management
 - `/ocr-pipeline` - OCR Pipeline Management
+- `/simple-ocr` - Simple OCR Interface
 - `/reports` - Reports and Exports
 
 ### Backend API
