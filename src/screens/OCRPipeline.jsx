@@ -50,17 +50,22 @@ export default function OCRPipeline() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(wcConfig),
         });
-        if (!wcRes.ok) throw new Error(`Webcam start failed: ${wcRes.status}`);
+        // 200 or 400 (already running) both mean the webcam is on
+        if (!wcRes.ok && wcRes.status !== 400) {
+          throw new Error(`Webcam start failed: ${wcRes.status}`);
+        }
         if (!mountedRef.current) return;
         setIsWebcamRunning(true);
 
-        // 2) start pipeline
+        // 2) start pipeline (400 = already running, which is fine)
         const ppRes = await fetch(`${API_BASE}/api/pipeline/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({}),
         });
-        if (!ppRes.ok) throw new Error(`Pipeline start failed: ${ppRes.status}`);
+        if (!ppRes.ok && ppRes.status !== 400) {
+          throw new Error(`Pipeline start failed: ${ppRes.status}`);
+        }
         if (!mountedRef.current) return;
         setIsPipelineRunning(true);
 
