@@ -9,6 +9,7 @@
   },
   "scripts": {
     "broker": "node broker.js",
+    "seed": "node seed-data.js",
     "start": "node-red --settings settings.js --flows flows.json"
   }
 }
