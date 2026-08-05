@@ -18,6 +18,7 @@ dist/
 
 # Node-RED runtime state
 node-red/.config.*.json
+node-red/.config.*.json.*
 
 # IDE
 .vscode/
