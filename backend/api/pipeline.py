@@ -128,6 +128,8 @@ async def start_pipeline(config: Optional[PipelineConfig] = None, background_tas
             "session_id": session_id,
             "config": pipeline_state["config"].model_dump()
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error starting pipeline: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -238,6 +240,8 @@ async def stop_pipeline():
         logger.info("Pipeline stopped")
         
         return {"status": "stopped"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error stopping pipeline: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -269,6 +273,8 @@ async def update_pipeline_config(config: PipelineConfig):
         logger.info("Pipeline configuration updated")
         
         return {"status": "updated", "config": config.model_dump()}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating pipeline config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -286,6 +292,8 @@ async def get_pipeline_status():
             config=pipeline_state["config"],
             metrics=metrics
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting pipeline status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -311,6 +319,8 @@ async def get_pipeline_metrics(
         )
         
         return metrics
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching pipeline metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
