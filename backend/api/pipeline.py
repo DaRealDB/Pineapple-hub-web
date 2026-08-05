@@ -395,7 +395,9 @@ def pipeline_worker(stop_event, session_id):
                     # Lower JPEG quality = smaller payload = lower latency
                     encode_params = [cv2.IMWRITE_JPEG_QUALITY, 60]
                     _, jpeg = cv2.imencode('.jpg', frame, encode_params)
-                    frame_b64 = base64.b64encode(jpeg).decode('utf-8')
+                    # .tobytes() is required — base64.b64encode on a raw
+                    # numpy array can read wrong memory on some Python/numpy combos
+                    frame_b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
 
                     asyncio.run_coroutine_threadsafe(
                         manager.broadcast({
@@ -416,6 +418,8 @@ def pipeline_worker(stop_event, session_id):
     def ocr_loop():
         """OCR thread — grabs latest frame at OCR_INTERVAL and processes it."""
         frame_counter = 0
+        error_counter = 0
+        ocr_start_time = time.time()
         prev_text_hash = None  # for simple frame-change skip
 
         while not stop_event.is_set():
@@ -447,12 +451,22 @@ def pipeline_worker(stop_event, session_id):
 
                 prev_text_hash = frame_hash
 
+                # ── one-time debug: save first OCR frame to disk ──
+                if frame_counter == 1:
+                    try:
+                        import os as _os
+                        _debug_path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "debug_ocr_frame.jpg")
+                        cv2.imwrite(_debug_path, frame)
+                        logger.info(f"Saved debug frame to {_debug_path} — open this file to see what the camera captures")
+                    except Exception:
+                        pass
+
                 # ── resize for OCR (smaller = faster recognition) ──
                 ocr_w = getattr(settings, "OCR_RESIZE_WIDTH", 320)
                 ocr_h = getattr(settings, "OCR_RESIZE_HEIGHT", 240)
                 ocr_frame = cv2.resize(frame, (ocr_w, ocr_h))
                 _, jpeg = cv2.imencode('.jpg', ocr_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                frame_b64 = base64.b64encode(jpeg).decode('utf-8')
+                frame_b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
 
                 # ── OCR (synchronous, runs in this thread) ──
                 ocr_raw = ocr_engine.process_image(frame_b64)
@@ -511,8 +525,12 @@ def pipeline_worker(stop_event, session_id):
                     manager.broadcast({
                         "type": "pipeline_status",
                         "payload": {
+                            "pipeline_state": "running",
                             "fps": 1000.0 / max(processing_ms, 1),
                             "processing_time_ms": processing_ms,
+                            "ocr_count": frame_counter,
+                            "error_count": error_counter,
+                            "uptime_seconds": int(time.time() - ocr_start_time),
                             "total_processed": frame_counter,
                         },
                     }),
@@ -530,6 +548,7 @@ def pipeline_worker(stop_event, session_id):
                 time.sleep(max(0, settings.OCR_INTERVAL_SECONDS - elapsed))
 
             except Exception as e:
+                error_counter += 1
                 logger.error(f"OCR thread error: {e}")
                 time.sleep(0.5)
 

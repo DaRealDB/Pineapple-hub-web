@@ -6,9 +6,30 @@ import PipelineStatus from '../components/PipelineStatus';
 
 const API_BASE = import.meta.env.VITE_OCR_API_URL || 'http://localhost:8000';
 
+/**
+ * Translate raw fetch errors into user-actionable messages.
+ * The browser's generic "Failed to fetch" string doesn't tell the user
+ * what actually went wrong — surface the URL and the likely cause.
+ */
+function formatFetchError(err, url) {
+  // Network-level failure (server unreachable / CORS / DNS)
+  if (
+    err.message === 'Failed to fetch' ||
+    err.name === 'TypeError'
+  ) {
+    return (
+      `Cannot reach OCR backend at ${url} — is the backend running?\n` +
+      `Start it with:  python backend/main.py  or  uvicorn backend.main:app --reload`
+    );
+  }
+  // HTTP-level failure (server responded with an error status)
+  return err.message || String(err);
+}
+
 export default function OCRPipeline() {
   const {
     connectionState,
+    connectionError,
     ocrResults,
     pipelineStatus,
     webcamFrame: wsWebcamFrame,
@@ -67,7 +88,7 @@ export default function OCRPipeline() {
         console.log('[OCRPipeline] Auto-started webcam + pipeline');
       } catch (e) {
         console.error('[OCRPipeline] Auto-start error:', e);
-        if (mountedRef.current) setError(e.message);
+        if (mountedRef.current) setError(formatFetchError(e, API_BASE));
       }
     };
 
@@ -142,7 +163,7 @@ export default function OCRPipeline() {
       setIsPipelineRunning(true);
     } catch (e) {
       console.error('[OCRPipeline] Restart error:', e);
-      setError(e.message);
+      setError(formatFetchError(e, API_BASE));
     }
   }, [useIpCamera, ipCameraUrl]);
 
@@ -252,11 +273,11 @@ export default function OCRPipeline() {
           </div>
         </div>
 
-        {/* Error banner */}
-        {error && (
+        {/* Error banner — fetch failures and WebSocket config errors */}
+        {(error || connectionError) && (
           <div className="bg-error-container p-sm rounded mb-md">
-            <p className="text-on-error-container font-body-md text-body-md">
-              Error: {error}
+            <p className="text-on-error-container font-body-md text-body-md whitespace-pre-wrap">
+              {error || connectionError}
             </p>
           </div>
         )}

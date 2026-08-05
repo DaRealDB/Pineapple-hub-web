@@ -1,0 +1,14 @@
+{
+  "name": "pineapple-hub-node-red",
+  "private": true,
+  "description": "Node-RED MQTT broker + seed data for Pineapple Hub web app",
+  "dependencies": {
+    "aedes": "^0.51.0",
+    "node-red": "^4.0.0",
+    "websocket-stream": "^5.5.2"
+  },
+  "scripts": {
+    "broker": "node broker.js",
+    "start": "node-red --settings settings.js --flows flows.json"
+  }
+}

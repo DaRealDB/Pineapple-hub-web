@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Debug artifacts
+debug_ocr_frame.jpg
+
+# Build output
+dist/
+
+# Env (contains local config)
+.env
+
+# Node-RED runtime state
+node-red/.config.*.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

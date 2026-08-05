@@ -29,6 +29,7 @@ export default function useWebSocket() {
     console.error('[useWebSocket] VITE_OCR_WS_URL not configured');
     return {
       connectionState: 'error',
+      connectionError: 'WebSocket URL not configured — check VITE_OCR_WS_URL in .env',
       ocrResults: [],
       pipelineStatus: null,
       webcamFrame: null,
@@ -36,11 +37,12 @@ export default function useWebSocket() {
       sendMessage: () => {},
     };
   }
-  
+
   if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
     console.error('[useWebSocket] Invalid WebSocket URL format:', wsUrl);
     return {
       connectionState: 'error',
+      connectionError: `Invalid WebSocket URL: ${wsUrl} — must start with ws:// or wss://`,
       ocrResults: [],
       pipelineStatus: null,
       webcamFrame: null,
@@ -191,6 +193,8 @@ export default function useWebSocket() {
   return {
     /** @type {WebSocketConnectionState} */
     connectionState,
+    /** Human-readable error when connection fails (null when OK) */
+    connectionError: null,
     /** Array of recent OCR results */
     ocrResults,
     /** Current pipeline status and metrics */
