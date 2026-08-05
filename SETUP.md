@@ -5,25 +5,35 @@ Fresh clone to running app in under 10 minutes.
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                      YOUR MACHINE                            │
-│                                                              │
-│  ┌─────────┐   ┌──────────┐   ┌──────────────┐              │
-│  │  React   │   │ Node-RED │   │  OCR Backend │              │
-│  │  :5173   │   │  :1881   │   │   :8000      │              │
-│  │  (Vite)  │   │ (flows)  │   │ (FastAPI+WS) │              │
-│  └────┬─────┘   └────┬─────┘   └──────┬───────┘              │
-│       │              │                │                      │
-│       │   ws://      │   mqtt://      │                      │
-│       └──────────────┼────────────────┘                      │
-│                      │                                       │
-│               ┌──────┴──────┐                                │
-│               │    Aedes    │                                │
-│               │ MQTT Broker │                                │
-│               │ :9001 (WS)  │                                │
-│               │ :1884 (TCP) │                                │
-│               └─────────────┘                                │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                         YOUR NETWORK                              │
+│                                                                  │
+│  ┌──────────────┐                                               │
+│  │  ESP32-P4     │  Ethernet (static IP 192.168.1.20)            │
+│  │  HX711 + LCD  │                                              │
+│  │  (firmware)   │──┐                                           │
+│  └──────────────┘  │                                           │
+│                     │  mqtt://192.168.1.10:1884                  │
+│  ┌──────────────────┼──────────────────────────────────────────┐ │
+│  │            YOUR LAPTOP                                      │ │
+│  │                  │                                          │ │
+│  │  ┌─────────┐    │    ┌──────────┐    ┌──────────────┐      │ │
+│  │  │  React   │   │    │ Node-RED │    │  OCR Backend │      │ │
+│  │  │  :5173   │   │    │  :1881   │    │   :8000      │      │ │
+│  │  │  (Vite)  │   │    │ (flows)  │    │ (FastAPI+WS) │      │ │
+│  │  └────┬─────┘   │    └────┬─────┘    └──────┬───────┘      │ │
+│  │       │          │         │                 │              │ │
+│  │       │  ws://   │   mqtt://   mqtt://       │              │ │
+│  │       └──────────┼─────────┼─────────────────┘              │ │
+│  │                  │         │                                │ │
+│  │           ┌──────┴─────────┴──────┐                         │ │
+│  │           │        Aedes          │                         │ │
+│  │           │     MQTT Broker       │                         │ │
+│  │           │  0.0.0.0:9001 (WS)    │                         │ │
+│  │           │  0.0.0.0:1884 (TCP)   │                         │ │
+│  │           └───────────────────────┘                         │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 | Service | Port | Tech | What it does |
@@ -222,6 +232,58 @@ bash start-all.sh                    # or double-click start-all.bat
 ```
 
 The React app hot-reloads on file changes. The OCR backend auto-reloads (`reload=True` in uvicorn). Node-RED watches its flows file.
+
+---
+
+## Connecting the ESP32 Firmware
+
+The firmware is **already compatible** with the web app's MQTT topic structure.
+Only two config constants in the firmware need to match your network:
+
+### Firmware changes required
+
+Open the firmware `.ino` file and update these two lines near the top:
+
+```cpp
+// Your laptop's IP address (run `ipconfig` on Windows to find it)
+const char* MQTT_BROKER     = "192.168.1.10";  // ← CHANGE THIS
+
+// Aedes broker TCP port (1884 — Mosquitto is on 1883)
+const int   MQTT_PORT       = 1884;             // ← CHANGE FROM 1883
+```
+
+Everything else — topic names, payload format, JSON structure — matches the web app exactly:
+
+```
+ESP32 publishes                     Web App subscribes
+─────────────────────────────────────────────────────────
+pineapple/scale1/availability  →    pineapple/scale1/#
+pineapple/scale1/data          →    pineapple/scale1/#
+pineapple/scale1/device_state  →    pineapple/scale1/#  (ignored, but available)
+
+Web App publishes                   ESP32
+─────────────────────────────────────────────────────────
+pineapple/hmi/{id}/set              (not consumed by firmware — use Node-RED to bridge)
+```
+
+### Verify the connection
+
+1. Flash the firmware with updated `MQTT_BROKER` and `MQTT_PORT`
+2. Open Serial Monitor (115200 baud) on the ESP32
+3. You should see: `[MQTT] Connecting to 192.168.1.10:1884... connected`
+4. Open the React app — the Live Grading screen should show live weight data
+5. Open Node-RED at http://127.0.0.1:1881 — the debug sidebar shows raw ESP32 telemetry
+
+### Switching between dev mode and production
+
+**Dev mode (no ESP32 hardware):**
+- The seed data generator (enabled by default) publishes fake crate weights every 2 seconds
+- Vision zones can be toggled via inject buttons in Node-RED
+
+**Production mode (ESP32 connected):**
+- In Node-RED, double-click the seed data inject nodes and set "Enabled: false"
+- The ESP32's real telemetry takes over
+- Vision zones will be published by the AI camera system (future)
 
 ---
 

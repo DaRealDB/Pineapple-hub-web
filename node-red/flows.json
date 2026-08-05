@@ -22,18 +22,27 @@
     "willPayload": ""
   },
   {
-    "id": "comment-availability",
+    "id": "comment-architecture",
     "type": "comment",
-    "name": "Scale Availability (retained, QoS 1)",
-    "info": "Publishes \"online\" on startup so the app sees the scale as available.\nRetained — survives client disconnects.",
+    "name": "Pineapple Hub — MQTT Architecture",
+    "info": "ESP32 Firmware publishes to:\n  pineapple/scale1/availability  (retained, QoS 1) — \"online\" | \"offline\"\n  pineapple/scale1/data          (QoS 1) — { weight_g, grade, status, ts }\n  pineapple/scale1/device_state  (QoS 1) — button/LCD/system state\n\nReact App subscribes to:\n  pineapple/scale1/#             (wildcard — all scale telemetry)\n  pineapple/vision/zone1         — \"occupied\" | \"clear\"\n  pineapple/vision/zone2         — \"occupied\" | \"clear\"\n  pineapple/hmi/+/state          — switch state wildcard\n\nReact App publishes to:\n  pineapple/hmi/{switchId}/set   — switch commands → echoed below\n\nAll flows connect to Aedes broker (node-red/broker.js):\n  TCP  : 0.0.0.0:1884  ← ESP32 + Node-RED\n  WS   : 0.0.0.0:9001  ← React app",
     "x": 180,
-    "y": 180,
+    "y": 20,
+    "wires": []
+  },
+  {
+    "id": "comment-seed-data",
+    "type": "comment",
+    "name": "━━━ DEV MODE: Seed Data Generator ━━━",
+    "info": "DISABLE THESE NODES (double-click → Enabled: false) when the real ESP32\nis connected. Otherwise seed data conflicts with real firmware data.\n\nGenerates realistic crate weights (12–16 kg) every 2 seconds for testing\nthe web app dashboard without physical hardware.",
+    "x": 180,
+    "y": 120,
     "wires": []
   },
   {
     "id": "inject-availability",
     "type": "inject",
-    "name": "Startup: scale online",
+    "name": "Startup: scale ONLINE (seed)",
     "props": [{ "p": "payload" }],
     "repeat": "",
     "crontab": "",
@@ -43,7 +52,7 @@
     "payloadType": "str",
     "topic": "",
     "x": 180,
-    "y": 240,
+    "y": 180,
     "wires": [["mqtt-out-availability"]]
   },
   {
@@ -55,22 +64,13 @@
     "retain": true,
     "broker": "mqtt-broker-config",
     "x": 520,
-    "y": 240,
-    "wires": []
-  },
-  {
-    "id": "comment-scale-data",
-    "type": "comment",
-    "name": "Scale Weight Data (QoS 1, every 2s)",
-    "info": "Simulates a weigh scale publishing crate weights.\nweight_g: 12–16 kg range (crate-scale per forge.md).\ngrade: placeholder.\nstatus.hx711_fault: false (no fault).",
-    "x": 180,
-    "y": 320,
+    "y": 180,
     "wires": []
   },
   {
     "id": "inject-scale-data",
     "type": "inject",
-    "name": "Every 2s",
+    "name": "Every 2s (seed)",
     "props": [{ "p": "payload" }],
     "repeat": "2",
     "crontab": "",
@@ -79,21 +79,21 @@
     "payloadType": "str",
     "topic": "",
     "x": 180,
-    "y": 380,
+    "y": 240,
     "wires": [["func-gen-weight"]]
   },
   {
     "id": "func-gen-weight",
     "type": "function",
-    "name": "Generate crate weight",
+    "name": "Generate crate weight (seed)",
     "func": "// Simulate a crate on the scale: ~12-16 kg with jitter\nconst baseWeight = 14000 + Math.sin(Date.now() / 5000) * 2000;\nconst jitter = (Math.random() - 0.5) * 200;\nconst weightG = Math.round(baseWeight + jitter);\n\n// Placeholder grade — forge.md §2: real formula TBD\nconst grades = ['Grade 1', 'Grade 1', 'Grade 1', 'Light', 'Heavy'];\nconst grade = grades[Math.floor(Math.random() * grades.length)];\n\nconst payload = {\n    weight_g: weightG,\n    grade: grade,\n    status: {\n        hx711_fault: false,\n        eth_or_wifi_issue: false\n    },\n    ts: Date.now()\n};\n\nmsg.payload = JSON.stringify(payload);\nreturn msg;",
     "outputs": 1,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 420,
-    "y": 380,
+    "x": 440,
+    "y": 240,
     "wires": [["mqtt-out-scale-data"]]
   },
   {
@@ -104,17 +104,107 @@
     "qos": "1",
     "retain": false,
     "broker": "mqtt-broker-config",
-    "x": 680,
+    "x": 720,
+    "y": 240,
+    "wires": []
+  },
+  {
+    "id": "comment-firmware-monitor",
+    "type": "comment",
+    "name": "━━━ PRODUCTION: ESP32 Firmware Monitor ━━━",
+    "info": "When the ESP32 is connected, these nodes let you:\n  1. Monitor raw firmware data on the debug sidebar\n  2. Monitor the device_state topic (buttons, LCD, system state)\n\nNo transformation needed — the firmware's JSON payload already matches\nthe web app's expected format exactly.",
+    "x": 180,
+    "y": 320,
+    "wires": []
+  },
+  {
+    "id": "mqtt-in-scale-data-monitor",
+    "type": "mqtt in",
+    "name": "ESP32 → scale data",
+    "topic": "pineapple/scale1/data",
+    "qos": "1",
+    "broker": "mqtt-broker-config",
+    "x": 180,
     "y": 380,
+    "wires": [["debug-scale-data"]]
+  },
+  {
+    "id": "debug-scale-data",
+    "type": "debug",
+    "name": "Scale data (from ESP32)",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 440,
+    "y": 380,
+    "wires": []
+  },
+  {
+    "id": "mqtt-in-device-state",
+    "type": "mqtt in",
+    "name": "ESP32 → device state",
+    "topic": "pineapple/scale1/device_state",
+    "qos": "1",
+    "broker": "mqtt-broker-config",
+    "x": 180,
+    "y": 440,
+    "wires": [["debug-device-state"]]
+  },
+  {
+    "id": "debug-device-state",
+    "type": "debug",
+    "name": "Device state (LCD, buttons)",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 440,
+    "y": 440,
+    "wires": []
+  },
+  {
+    "id": "mqtt-in-availability-monitor",
+    "type": "mqtt in",
+    "name": "ESP32 → availability",
+    "topic": "pineapple/scale1/availability",
+    "qos": "1",
+    "broker": "mqtt-broker-config",
+    "x": 180,
+    "y": 500,
+    "wires": [["debug-availability"]]
+  },
+  {
+    "id": "debug-availability",
+    "type": "debug",
+    "name": "Availability (from ESP32)",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 440,
+    "y": 500,
     "wires": []
   },
   {
     "id": "comment-zones",
     "type": "comment",
-    "name": "Vision Zones (forge.md §3)",
-    "info": "Zone 1 = forklift at scale (occupied → weight suppressed).\nZone 2 = forklift at bin/crate (occupied → capture armed).\nUse the inject buttons to toggle each zone.",
+    "name": "━━━ Vision Zones (forge.md §3) ━━━",
+    "info": "Zone 1 = forklift at scale (occupied → weight suppressed in UI)\nZone 2 = forklift at bin/crate (occupied → capture armed in UI)\n\nUse these inject buttons to simulate zone occupancy for testing.\nIn production, these would be published by the AI camera system.",
     "x": 180,
-    "y": 480,
+    "y": 580,
     "wires": []
   },
   {
@@ -129,7 +219,7 @@
     "payloadType": "str",
     "topic": "",
     "x": 180,
-    "y": 550,
+    "y": 650,
     "wires": [["mqtt-out-zone1"]]
   },
   {
@@ -144,7 +234,7 @@
     "payloadType": "str",
     "topic": "",
     "x": 180,
-    "y": 600,
+    "y": 700,
     "wires": [["mqtt-out-zone1"]]
   },
   {
@@ -156,7 +246,7 @@
     "retain": false,
     "broker": "mqtt-broker-config",
     "x": 440,
-    "y": 575,
+    "y": 675,
     "wires": []
   },
   {
@@ -171,7 +261,7 @@
     "payloadType": "str",
     "topic": "",
     "x": 560,
-    "y": 550,
+    "y": 650,
     "wires": [["mqtt-out-zone2"]]
   },
   {
@@ -186,7 +276,7 @@
     "payloadType": "str",
     "topic": "",
     "x": 560,
-    "y": 600,
+    "y": 700,
     "wires": [["mqtt-out-zone2"]]
   },
   {
@@ -198,27 +288,27 @@
     "retain": false,
     "broker": "mqtt-broker-config",
     "x": 820,
-    "y": 575,
+    "y": 675,
     "wires": []
   },
   {
     "id": "comment-switches",
     "type": "comment",
-    "name": "HMI Switches (forge.md §4)",
-    "info": "Switch Panel on the Device Management screen publishes to pineapple/hmi/{switchId}/set.\nThis flow echoes back state changes so the panel stays in sync.",
+    "name": "━━━ HMI Switches (forge.md §4) ━━━",
+    "info": "The web app's Switch Panel (Device Management screen) publishes commands\nto pineapple/hmi/{switchId}/set. This flow echoes them back as state updates\non pineapple/hmi/{switchId}/state so the panel shows the confirmed state.\n\nIn production with real hardware, the ESP32 or a PLC would publish the\nactual physical switch state — remove the echo function and let hardware\ndrive it.",
     "x": 180,
-    "y": 700,
+    "y": 780,
     "wires": []
   },
   {
     "id": "mqtt-in-switch-cmd",
     "type": "mqtt in",
-    "name": "Switch commands",
+    "name": "Switch commands (from app)",
     "topic": "pineapple/hmi/+/set",
     "qos": "1",
     "broker": "mqtt-broker-config",
     "x": 180,
-    "y": 770,
+    "y": 850,
     "wires": [["func-echo-switch", "debug-switch-cmd"]]
   },
   {
@@ -232,7 +322,7 @@
     "finalize": "",
     "libs": [],
     "x": 460,
-    "y": 770,
+    "y": 850,
     "wires": [["mqtt-out-switch-state"]]
   },
   {
@@ -244,13 +334,13 @@
     "retain": false,
     "broker": "mqtt-broker-config",
     "x": 700,
-    "y": 770,
+    "y": 850,
     "wires": []
   },
   {
     "id": "inject-switch1-on",
     "type": "inject",
-    "name": "Switch 1 ON",
+    "name": "Switch 1 ON (test)",
     "props": [
       { "p": "topic", "v": "pineapple/hmi/switch_1/state", "vt": "str" },
       { "p": "payload", "v": "on", "vt": "str" }
@@ -262,13 +352,13 @@
     "payloadType": "str",
     "topic": "pineapple/hmi/switch_1/state",
     "x": 180,
-    "y": 850,
+    "y": 920,
     "wires": [["mqtt-out-switch-state"]]
   },
   {
     "id": "inject-switch1-off",
     "type": "inject",
-    "name": "Switch 1 OFF",
+    "name": "Switch 1 OFF (test)",
     "props": [
       { "p": "topic", "v": "pineapple/hmi/switch_1/state", "vt": "str" },
       { "p": "payload", "v": "off", "vt": "str" }
@@ -280,7 +370,7 @@
     "payloadType": "str",
     "topic": "pineapple/hmi/switch_1/state",
     "x": 180,
-    "y": 900,
+    "y": 970,
     "wires": [["mqtt-out-switch-state"]]
   },
   {
@@ -296,16 +386,7 @@
     "statusVal": "",
     "statusType": "auto",
     "x": 460,
-    "y": 830,
-    "wires": []
-  },
-  {
-    "id": "comment-setup",
-    "type": "comment",
-    "name": "Pineapple Hub — MQTT Seed Data Flow",
-    "info": "Standalone Aedes broker runs via broker.js (ws://127.0.0.1:9001, mqtt://127.0.0.1:1883).\n\nScale data published every 2s to pineapple/scale1/data.\nAvailability published once on startup (retained).\nZone injectors let you manually toggle vision zones.\nSwitch commands from the app are echoed back as state updates.",
-    "x": 180,
-    "y": 20,
+    "y": 910,
     "wires": []
   }
 ]
