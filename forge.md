@@ -228,3 +228,43 @@ Before and while making the above changes:
   references them but they don't exist on disk. This session's work treated forge.md as the
   authoritative spec and inferred the original design system from the existing codebase (Tailwind
   tokens in `tailwind.config.js`, component patterns in `src/components/`).
+- `[2026-08-06]` — **Two-schema, one-database decision confirmed.** `grading` + `auth` schemas
+  in a single PostgreSQL instance (`pineapple_hub`). Rationale: simpler ops for hackathon context;
+  easy to split into separate instances later if needed. Express backend added at `backend/`
+  alongside existing Python OCR backend (separate ports, no collision).
+- `[2026-08-06]` — **Reset-button reinterpretation FLAGGED, NOT CONFIRMED.** Firmware changes
+  documented in implementation plan but NOT implemented (`pineapple_scale_firmware.ino` not in
+  repo). Assumption: Button 2 (ESP.restart()) becomes manual crate-log trigger via
+  `doManualLogTrigger()`. Team must confirm before production; old restart behavior may still be
+  needed via long-press or admin-only HMI action.
+- `[2026-08-06]` — **RBAC table confirmed as spec.** admin full access, supervisor can control
+  HMI + view full analytics, employee gets basic analytics + operations log only. All routes
+  enforce permissions server-side via `requirePermission()` middleware in Express backend.
+  Permission keys: `hmi.control`, `hmi.log_trigger`, `devices.manage`, `analytics.view_full`,
+  `analytics.view_basic`, `operations_log.view`, `users.manage`.
+- `[2026-08-06]` — **OCR/CNN capture window set to 3000ms** (time window during which weight,
+  Zone 2 occupancy, and OCR result must all arrive to count as one crate event). Implemented
+  in `useCrateLogCapture.js` hook. OCR failures (no text/low confidence) still create log
+  entries with `ocr_extracted_id = NULL` — events are logged, not silently dropped.
+- `[2026-08-06]` — **Backend architecture: Express.js added.** Supersedes forge.md §6.4
+  ("no new backend server"). Rationale: PostgreSQL + auth/RBAC + HMI command proxying require
+  a server-side component. Node-RED retained for existing SQLite logging, CSV export, and Aedes
+  broker hosting. Express runs on port 3001 (configurable via `PORT` env var).
+- `[2026-08-06]` — **UI removals completed.** Environment card removed from LiveGrading (no
+  environmental sensor in scope). Analytics "MQTT OFFLINE" header pill, line status, and ambient
+  status removed. Breadcrumb wired to live `grading.devices.location_path` from backend API.
+  Analytics permission-gated: employee = basic (Avg Crate Weight only), admin/supervisor = full.
+- `[2026-08-06]` — **Placeholder SwitchPanel replaced with real HMIPanel.** New
+  `src/components/HMIPanel.jsx` sends commands over `pineapple/scale1/command` MQTT topic
+  (Power, Tare, Mode, Log Trigger) with RBAC gating, pending/timeout states, and
+  `device_state` confirmation. Old SwitchPanel and switchConfig.js retained for reference.
+- `[2026-08-06]` — **Sidebar wired to auth context.** User card shows logged-in user's name
+  and role. Logout button added (revokes session server-side). Sidebar "SCALE OFFLINE"
+  indicator preserved (separate from removed Analytics pill — confirmed distinction).
+- `[2026-08-06]` — **Firmware file (`pineapple_scale_firmware.ino`) not in repo.** Part 3
+  firmware changes (command subscription, refactored action functions, Reset→log_trigger
+  repurposing) documented in implementation plan but not implemented. Pending team providing
+  the file.
+- `[2026-08-06]` — **Missing "image 4" for logs schema flagged to team.** Schema built from
+  Operations Log table screenshot (Timestamp, Batch ID, Scale ID, Crate Weight, Grade, Audit
+  Status, Action columns). If image 4 contained different fields, schema needs adjustment.
