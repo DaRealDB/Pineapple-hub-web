@@ -10,7 +10,6 @@ import OperationsLog from './screens/OperationsLog';
 import Analytics from './screens/Analytics';
 import DeviceManagement from './screens/DeviceManagement';
 import Reports from './screens/Reports';
-import OCRPipeline from './screens/OCRPipeline';
 import useMqtt from './hooks/useMqtt';
 import { useAuth } from './context/AuthContext';
 import { PERM } from './constants/permissions';
@@ -141,14 +140,6 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <Reports mqtt={mqttContext} />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/ocr-pipeline"
-            element={
-              <ProtectedRoute>
-                <OCRPipeline mqtt={mqttContext} />
               </ProtectedRoute>
             }
           />

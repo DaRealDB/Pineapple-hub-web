@@ -17,7 +17,6 @@ export default function Sidebar({ availability }) {
     { icon: 'analytics', label: 'Analytics', to: '/analytics' },
     { icon: 'router', label: 'Devices', to: '/devices' },
     { icon: 'assessment', label: 'Reports', to: '/reports' },
-    { icon: 'scanner', label: 'OCR Pipeline', to: '/ocr-pipeline' },
   ];
 
   return (
