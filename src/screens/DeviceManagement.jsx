@@ -1,18 +1,18 @@
 import { useState } from 'react';
 import StatusPill from '../components/StatusPill';
-import SwitchPanel from '../components/SwitchPanel';
+import HMIPanel from '../components/HMIPanel';
 import { signalStrength } from '../utils/formatters';
 
 /**
  * Device Management screen — route: /devices
  *
  * Shows IoT device roster with live MQTT availability for Scale 04.
- * Per forge.md §4: SwitchPanel for HMI switch mirroring.
+ * Per forge.md §4: HMIPanel for real device controls (MQTT commands + device_state).
  *
  * @param {{ mqtt: object }} props
  */
 export default function DeviceManagement({ mqtt }) {
-  const { connectionState, availability, switchStates, publishSwitchCommand } = mqtt;
+  const { connectionState, availability, deviceState, publishDeviceCommand } = mqtt;
   const [toastMessage, setToastMessage] = useState(null);
 
   const isLive = connectionState === 'connected';
@@ -179,11 +179,11 @@ export default function DeviceManagement({ mqtt }) {
         <StatCard icon="history" label="LOG EVENTS" value="--" unit="" sublabel="No events yet" />
       </div>
 
-      {/* Switch Panel (forge.md §4) */}
-      <SwitchPanel
-        switchStates={switchStates}
-        publishSwitchCommand={publishSwitchCommand}
-        connectionState={connectionState}
+      {/* HMI Panel (forge.md §4) */}
+      <HMIPanel
+        deviceState={deviceState}
+        publishDeviceCommand={publishDeviceCommand}
+        isLive={isLive}
       />
 
       {/* Toast notification */}
