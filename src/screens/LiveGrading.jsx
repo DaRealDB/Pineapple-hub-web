@@ -1,16 +1,16 @@
 import { useMemo } from 'react';
 import StatusPill from '../components/StatusPill';
+import HMIPanel from '../components/HMIPanel';
+import WebcamFeed from '../components/WebcamFeed';
+import useWebSocket from '../hooks/useWebSocket';
 import { crateGradeLabel } from '../utils/formatters';
 
 /**
  * Live Grading screen — route: /
  *
- * All data comes from the MQTT broker via useMqtt(). When the broker is
- * unreachable or the scale is offline/faulted, the UI shows honest
- * offline/empty states — never seed/mock data.
- *
- * Per forge.md §2: crate/bin language throughout.
- * Per forge.md §3: Zone 1/2 occupancy indicators + zone-gated weight validity.
+ * Primary operations dashboard. Shows live crate weight from the scale,
+ * HMI device controls (RBAC-gated), camera/OCR preview, zone status,
+ * weight gauge, and recent crate log.
  *
  * @param {{ mqtt: object }} props
  */
@@ -25,7 +25,17 @@ export default function LiveGrading({ mqtt }) {
     zone1,
     zone2,
     captureArmed,
+    deviceState,
+    publishDeviceCommand,
   } = mqtt;
+
+  // Camera / OCR feed (separate WebSocket to Python OCR backend)
+  const {
+    connectionState: ocrConnState,
+    webcamFrame,
+    ocrResults,
+    pipelineStatus,
+  } = useWebSocket();
 
   const isLive = dataValid;
   const isConnected = connectionState === 'connected';
@@ -44,7 +54,7 @@ export default function LiveGrading({ mqtt }) {
     return crateGradeLabel(grade);
   }, [isLive, grade]);
 
-  /* ── Gauge (0–30 kg crate range, placeholder) ── */
+  /* ── Gauge (0–30 kg crate range) ── */
   const GAUGE_MAX_KG = 30;
   const gaugePercent = useMemo(() => {
     if (!isLive || weightG == null) return 0;
@@ -54,14 +64,14 @@ export default function LiveGrading({ mqtt }) {
   const circumference = 351.8; // 2π × 56
   const dashOffset = circumference - (gaugePercent / 100) * circumference;
 
-  /* ── Hardware status ── */
-  const hardwareOnline = isLive || (scaleOnline && !hasFault);
+  /* ── Latest OCR result ── */
+  const latestOcr = ocrResults.length > 0 ? ocrResults[0] : null;
 
   return (
     <div className="grid grid-cols-12 gap-lg">
-      {/* Left column: Primary KPI + Gauge + Throughput */}
-      <div className="col-span-12 lg:col-span-8 flex flex-col gap-lg">
-        {/* Primary KPI Block */}
+      {/* ── LEFT COLUMN: Weight KPI, Gauge, Zones ── */}
+      <div className="col-span-12 lg:col-span-7 flex flex-col gap-lg">
+        {/* Primary Weight KPI */}
         <section className="bg-surface-container border border-outline-variant rounded p-xl flex flex-col items-center justify-center text-center">
           <span className="font-label-caps text-label-caps text-on-surface-variant mb-md">
             CURRENT CRATE WEIGHT
@@ -84,7 +94,7 @@ export default function LiveGrading({ mqtt }) {
             </h2>
           )}
 
-          {/* Status indicator stack */}
+          {/* Status indicators */}
           <div className="mt-sm flex flex-wrap items-center justify-center gap-xs">
             {zone1Occupied && (
               <StatusPill variant="occupied" label="ZONE 1 OCCUPIED — WEIGHT SUPPRESSED" />
@@ -106,28 +116,42 @@ export default function LiveGrading({ mqtt }) {
             )}
           </div>
 
-          {/* Grade pill */}
-          <div className="mt-xl px-lg py-sm bg-primary/10 border border-primary/30 rounded-full inline-flex items-center gap-md">
-            <span
-              className={`w-3 h-3 rounded-full ${
-                isLive && !zone1Occupied ? 'bg-primary animate-pulse' : 'bg-on-surface-variant'
-              }`}
-            />
-            <span className="font-label-caps text-label-caps text-primary tracking-widest">
-              {displayGrade || '--'}
-            </span>
-            {isLive && !zone1Occupied && (
-              <span className="font-label-caps text-[10px] text-[#10B981]">LIVE</span>
-            )}
-            {zone1Occupied && (
-              <span className="font-label-caps text-[10px] text-[#EF4444]">SUPPRESSED</span>
+          {/* Grade pill + latest OCR */}
+          <div className="mt-xl flex items-center gap-lg">
+            <div className="px-lg py-sm bg-primary/10 border border-primary/30 rounded-full inline-flex items-center gap-md">
+              <span
+                className={`w-3 h-3 rounded-full ${
+                  isLive && !zone1Occupied ? 'bg-primary animate-pulse' : 'bg-on-surface-variant'
+                }`}
+              />
+              <span className="font-label-caps text-label-caps text-primary tracking-widest">
+                {displayGrade || '--'}
+              </span>
+              {isLive && !zone1Occupied && (
+                <span className="font-label-caps text-[10px] text-[#10B981]">LIVE</span>
+              )}
+            </div>
+
+            {/* OCR batch ID preview */}
+            {latestOcr?.text && (
+              <div className="px-lg py-sm bg-tertiary/10 border border-tertiary/30 rounded-full inline-flex items-center gap-md">
+                <span className="material-symbols-outlined text-sm text-tertiary">qr_code_scanner</span>
+                <span className="font-data-mono text-data-mono text-tertiary">
+                  {latestOcr.text}
+                </span>
+                {latestOcr.confidence != null && (
+                  <span className="font-label-caps text-[10px] text-tertiary/70">
+                    {(latestOcr.confidence * 100).toFixed(0)}%
+                  </span>
+                )}
+              </div>
             )}
           </div>
         </section>
 
-        {/* Gauge + Zone Status grid */}
+        {/* Gauge + Zone Status */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-lg">
-          {/* Gauge Visualization */}
+          {/* Gauge */}
           <div className="bg-surface-container border border-outline-variant rounded p-lg flex items-center gap-xl">
             <div className="relative w-32 h-32 flex-shrink-0">
               <svg className="w-full h-full transform -rotate-90">
@@ -174,138 +198,142 @@ export default function LiveGrading({ mqtt }) {
             </div>
           </div>
 
-          {/* Zone Status (forge.md §3) */}
+          {/* Zone Status */}
           <div className="bg-surface-container border border-outline-variant rounded p-lg flex flex-col gap-md">
-            <div>
-              <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-sm">
-                CAMERA ZONES
-              </h3>
-              <div className="flex gap-sm">
-                <div className="flex-1 bg-surface-container-low p-sm rounded">
-                  <div className="flex items-center justify-between">
-                    <span className="font-label-caps text-[10px] text-on-surface-variant">
-                      ZONE 1 (SCALE)
-                    </span>
-                    <StatusPill
-                      variant={zone1 === 'occupied' ? 'occupied' : zone1 === 'clear' ? 'clear' : 'pending'}
-                      label={zone1 === 'occupied' ? 'OCCUPIED' : zone1 === 'clear' ? 'CLEAR' : 'NO DATA'}
-                    />
-                  </div>
-                  <p className="font-body-md text-[11px] text-on-surface-variant mt-xs">
-                    {zone1 === 'occupied'
-                      ? 'Weight reading suppressed — hand/forklift in scale area.'
-                      : zone1 === 'clear'
-                        ? 'Scale area clear — weight readings valid.'
-                        : 'Camera zone sensor not connected.'}
-                  </p>
-                </div>
-                <div className="flex-1 bg-surface-container-low p-sm rounded">
-                  <div className="flex items-center justify-between">
-                    <span className="font-label-caps text-[10px] text-on-surface-variant">
-                      ZONE 2 (CRATE)
-                    </span>
-                    <StatusPill
-                      variant={zone2 === 'occupied' ? 'armed' : zone2 === 'clear' ? 'clear' : 'pending'}
-                      label={zone2 === 'occupied' ? 'ARMED' : zone2 === 'clear' ? 'CLEAR' : 'NO DATA'}
-                    />
-                  </div>
-                  <p className="font-body-md text-[11px] text-on-surface-variant mt-xs">
-                    {zone2 === 'occupied'
-                      ? 'Capture sequence armed — crate placement detected.'
-                      : zone2 === 'clear'
-                        ? 'No crate detected in capture zone.'
-                        : 'Camera zone sensor not connected.'}
-                  </p>
-                </div>
-              </div>
-              {captureArmed && !zone1Occupied && (
-                <div className="mt-sm bg-primary/10 border border-primary/30 rounded p-sm text-center">
-                  <span className="font-label-caps text-label-caps text-primary">
-                    ⏳ CAPTURE SEQUENCE ACTIVE
+            <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-sm">
+              CAMERA ZONES
+            </h3>
+            <div className="flex gap-sm">
+              <div className="flex-1 bg-surface-container-low p-sm rounded">
+                <div className="flex items-center justify-between">
+                  <span className="font-label-caps text-[10px] text-on-surface-variant">
+                    ZONE 1 (SCALE)
                   </span>
+                  <StatusPill
+                    variant={zone1 === 'occupied' ? 'occupied' : zone1 === 'clear' ? 'clear' : 'pending'}
+                    label={zone1 === 'occupied' ? 'OCCUPIED' : zone1 === 'clear' ? 'CLEAR' : 'NO DATA'}
+                  />
                 </div>
-              )}
+                <p className="font-body-md text-[11px] text-on-surface-variant mt-xs">
+                  {zone1 === 'occupied'
+                    ? 'Weight reading suppressed — hand/forklift in scale area.'
+                    : zone1 === 'clear'
+                      ? 'Scale area clear — weight readings valid.'
+                      : 'Camera zone sensor not connected.'}
+                </p>
+              </div>
+              <div className="flex-1 bg-surface-container-low p-sm rounded">
+                <div className="flex items-center justify-between">
+                  <span className="font-label-caps text-[10px] text-on-surface-variant">
+                    ZONE 2 (CRATE)
+                  </span>
+                  <StatusPill
+                    variant={zone2 === 'occupied' ? 'armed' : zone2 === 'clear' ? 'clear' : 'pending'}
+                    label={zone2 === 'occupied' ? 'ARMED' : zone2 === 'clear' ? 'CLEAR' : 'NO DATA'}
+                  />
+                </div>
+                <p className="font-body-md text-[11px] text-on-surface-variant mt-xs">
+                  {zone2 === 'occupied'
+                    ? 'Capture sequence armed — crate placement detected.'
+                    : zone2 === 'clear'
+                      ? 'No crate detected in capture zone.'
+                      : 'Camera zone sensor not connected.'}
+                </p>
+              </div>
             </div>
-
-            {/* Throughput — live-only placeholder */}
-            <div className="border-t border-outline-variant pt-md">
-              <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-sm">
-                SHIFT THROUGHPUT
-              </h3>
-              <p className="font-body-md text-body-md text-on-surface-variant text-center py-md">
-                Throughput metrics will be available once the scale is online and processing crates.
-              </p>
-            </div>
+            {captureArmed && !zone1Occupied && (
+              <div className="mt-sm bg-primary/10 border border-primary/30 rounded p-sm text-center">
+                <span className="font-label-caps text-label-caps text-primary">
+                  ⏳ CAPTURE SEQUENCE ACTIVE
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Right column: Hardware Status, Batch Log */}
-      <div className="col-span-12 lg:col-span-4 flex flex-col gap-lg">
-        {/* Hardware Status Card */}
-        <div className="bg-surface-container border border-outline-variant rounded overflow-hidden flex flex-col">
-          <div className="p-lg border-b border-outline-variant">
+      {/* ── RIGHT COLUMN: HMI Controls, Camera Feed, Crate Log ── */}
+      <div className="col-span-12 lg:col-span-5 flex flex-col gap-lg">
+        {/* HMI Device Controls */}
+        <HMIPanel
+          deviceState={deviceState}
+          publishDeviceCommand={publishDeviceCommand}
+          isLive={isConnected}
+        />
+
+        {/* Camera / OCR Feed */}
+        <div className="bg-surface-container border border-outline-variant rounded p-lg">
+          <div className="flex items-center justify-between mb-md">
             <h3 className="font-label-caps text-label-caps text-on-surface-variant">
-              HARDWARE STATUS
+              CAMERA FEED
             </h3>
+            <StatusPill
+              variant={ocrConnState === 'connected' ? 'online' : 'offline'}
+              label={ocrConnState === 'connected' ? 'LIVE' : 'OFFLINE'}
+            />
           </div>
-          <div className="p-xl flex-1 flex flex-col items-center justify-center bg-surface-container-low">
-            <div
-              className={`w-20 h-20 rounded-full border-4 flex items-center justify-center mb-lg ${
-                hardwareOnline ? 'border-primary/20' : 'border-[#EF4444]/20'
-              }`}
-            >
-              <span
-                className={`material-symbols-outlined text-4xl ${
-                  hardwareOnline ? 'text-primary' : 'text-[#EF4444]'
-                }`}
-                style={{ fontVariationSettings: "'FILL' 1" }}
-              >
-                sensors
-              </span>
-            </div>
-            <div className="text-center">
-              <div className="flex items-center justify-center gap-md mb-xs">
-                <span
-                  className={`w-4 h-4 rounded-full ${
-                    hardwareOnline
-                      ? 'bg-[#10B981] shadow-[0_0_12px_#10B981]'
-                      : 'bg-[#EF4444]'
-                  }`}
-                />
-                <h4 className="font-headline-md text-headline-md text-on-surface font-bold uppercase tracking-tight">
-                  {hasFault
-                    ? 'Scale 04 — Sensor Fault'
-                    : hardwareOnline
-                      ? 'Scale 04 Online'
-                      : 'Scale 04 Offline'}
-                </h4>
+
+          <WebcamFeed
+            frameData={webcamFrame?.frame_data}
+            isRunning={ocrConnState === 'connected'}
+          />
+
+          {/* Pipeline stats */}
+          {pipelineStatus && (
+            <div className="mt-sm grid grid-cols-3 gap-xs">
+              <div className="bg-surface-container-low p-sm rounded text-center">
+                <span className="font-label-caps text-[10px] text-on-surface-variant block">FPS</span>
+                <span className="font-data-mono text-data-mono text-primary">
+                  {pipelineStatus.fps?.toFixed(1) || '--'}
+                </span>
               </div>
-              <p className="font-data-mono text-data-mono text-on-surface-variant">
-                {isLive
-                  ? 'Latency: 3ms (Live)'
-                  : !isConnected
-                    ? 'MQTT broker unreachable'
-                    : !scaleOnline
-                      ? 'Scale reports offline'
-                      : 'Awaiting data...'}
-              </p>
+              <div className="bg-surface-container-low p-sm rounded text-center">
+                <span className="font-label-caps text-[10px] text-on-surface-variant block">OCR</span>
+                <span className="font-data-mono text-data-mono text-on-surface">
+                  {pipelineStatus.ocr_count ?? '--'}
+                </span>
+              </div>
+              <div className="bg-surface-container-low p-sm rounded text-center">
+                <span className="font-label-caps text-[10px] text-on-surface-variant block">MS</span>
+                <span className="font-data-mono text-data-mono text-on-surface">
+                  {pipelineStatus.processing_time_ms?.toFixed(0) || '--'}
+                </span>
+              </div>
             </div>
-          </div>
-          <div className="px-lg py-md bg-surface-container-high flex items-center justify-between">
-            <span className="font-body-md text-on-surface-variant">Last Calibration:</span>
-            <span className="font-data-mono text-data-mono text-on-surface tabular-nums">
-              {isConnected && scaleOnline ? 'Awaiting report...' : '--'}
-            </span>
-          </div>
+          )}
         </div>
 
-        {/* Batch Log — live-only, empty state */}
-        <div className="bg-surface-container border border-outline-variant rounded p-lg flex-1">
+        {/* Recent OCR extractions */}
+        <div className="bg-surface-container border border-outline-variant rounded p-lg">
+          <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-md">
+            RECENT OCR
+          </h3>
+          {ocrResults.length === 0 ? (
+            <p className="font-body-md text-body-md text-on-surface-variant text-center py-md">
+              Waiting for OCR results...
+            </p>
+          ) : (
+            <div className="space-y-xs max-h-48 overflow-y-auto scrollbar-industrial">
+              {ocrResults.slice(0, 5).map((r, i) => (
+                <div key={i} className="bg-surface-container-low p-sm rounded flex items-center justify-between">
+                  <span className="font-data-mono text-xs text-on-surface truncate flex-1 mr-sm">
+                    {r.text || '(no text)'}
+                  </span>
+                  <span className="font-data-mono text-xs text-primary flex-shrink-0">
+                    {r.confidence != null ? `${(r.confidence * 100).toFixed(0)}%` : '--'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Crate Log — quick preview */}
+        <div className="bg-surface-container border border-outline-variant rounded p-lg">
           <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-lg">
             CRATE LOG (LINE B)
           </h3>
-          <div className="flex flex-col items-center justify-center py-xl text-center">
+          <div className="flex flex-col items-center justify-center py-lg text-center">
             <span className="material-symbols-outlined text-4xl text-on-surface-variant/30 mb-sm">
               inventory_2
             </span>
@@ -315,7 +343,7 @@ export default function LiveGrading({ mqtt }) {
                 : 'Connect to the MQTT broker to begin logging crates.'}
             </p>
             <p className="font-data-mono text-xs text-on-surface-variant/50 mt-xs">
-              Requires Node-RED SQLite logging endpoint
+              Logs saved to PostgreSQL via Express API
             </p>
           </div>
         </div>

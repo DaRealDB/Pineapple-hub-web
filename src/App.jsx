@@ -39,6 +39,8 @@ export default function App() {
     captureArmed,
     switchStates,
     publishSwitchCommand,
+    deviceState,
+    publishDeviceCommand,
   } = useMqtt();
 
   const [deviceLocation, setDeviceLocation] = useState(null);
@@ -77,6 +79,8 @@ export default function App() {
     captureArmed,
     switchStates,
     publishSwitchCommand,
+    deviceState,
+    publishDeviceCommand,
   };
 
   // Login & register pages — no shell. useMqtt() stays at the top level (rules of hooks),
