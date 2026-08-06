@@ -142,7 +142,7 @@ export default function App() {
             path="/ocr-pipeline"
             element={
               <ProtectedRoute>
-                <OCRPipeline />
+                <OCRPipeline mqtt={mqttContext} />
               </ProtectedRoute>
             }
           />

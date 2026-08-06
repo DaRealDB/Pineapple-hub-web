@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import useWebSocket from '../hooks/useWebSocket';
+import useCrateLogCapture from '../hooks/useCrateLogCapture';
 import WebcamFeed from '../components/WebcamFeed';
 import OCRResults from '../components/OCRResults';
 import PipelineStatus from '../components/PipelineStatus';
@@ -26,7 +27,7 @@ function formatFetchError(err, url) {
   return err.message || String(err);
 }
 
-export default function OCRPipeline() {
+export default function OCRPipeline({ mqtt }) {
   const {
     connectionState,
     connectionError,
@@ -34,6 +35,10 @@ export default function OCRPipeline() {
     pipelineStatus,
     webcamFrame: wsWebcamFrame,
   } = useWebSocket();
+
+  // Wire OCR results + MQTT weight/zone state to crate_log creation
+  const latestOcr = ocrResults.length > 0 ? ocrResults[0] : null;
+  useCrateLogCapture(mqtt, latestOcr);
 
   // ── state ──────────────────────────────────────────────────────
   const [isWebcamRunning, setIsWebcamRunning] = useState(false);
