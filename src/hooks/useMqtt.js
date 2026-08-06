@@ -7,7 +7,9 @@ import {
   TOPIC_VISION_ZONE1,
   TOPIC_VISION_ZONE2,
   TOPIC_HMI_STATE_WILDCARD,
+  TOPIC_SCALE1_DEVICE_STATE,
   hmiSetTopic,
+  deviceCommandTopic,
 } from '../constants/mqttTopics';
 
 /**
@@ -67,6 +69,11 @@ export default function useMqtt() {
   /* ── HMI switch state mirror (forge.md §4) ── */
   const [switchStates, setSwitchStates] = useState(
     /** @type {Record<string, 'on' | 'off'>} */ ({})
+  );
+
+  /* ── Device state for HMI confirmation ── */
+  const [deviceState, setDeviceState] = useState(
+    /** @type {{ power?: 'on'|'off', mode?: string, tare?: boolean } | null} */ (null)
   );
 
   /**
@@ -152,6 +159,16 @@ export default function useMqtt() {
       return;
     }
 
+    /* ── Device state (Part 3: HMI remote control) ── */
+    if (topic === TOPIC_SCALE1_DEVICE_STATE) {
+      try {
+        setDeviceState(JSON.parse(str));
+      } catch (e) {
+        console.error('[MQTT] Failed to parse device_state:', e);
+      }
+      return;
+    }
+
     /* ── HMI switch state (forge.md §4) ──
        Topic pattern: pineapple/hmi/{switchId}/state → "on" | "off" */
     if (topic.startsWith('pineapple/hmi/') && topic.endsWith('/state')) {
@@ -194,6 +211,11 @@ export default function useMqtt() {
       client.subscribe(TOPIC_HMI_STATE_WILDCARD, { qos: 1 }, (err) => {
         if (err) console.error('[MQTT] Subscribe hmi error:', err);
       });
+
+      /* Device state (Part 3: HMI remote control) */
+      client.subscribe(TOPIC_SCALE1_DEVICE_STATE, { qos: 1 }, (err) => {
+        if (err) console.error('[MQTT] Subscribe device_state error:', err);
+      });
     });
 
     client.on('close', handleClose);
@@ -218,6 +240,22 @@ export default function useMqtt() {
       clientRef.current.publish(topic, command, { qos: 1 });
     } else {
       console.warn('[MQTT] Cannot publish switch command — not connected');
+    }
+  }, []);
+
+  /* ── Device command publisher (Part 3: HMI remote control) ── */
+
+  /**
+   * Publish a command to the scale hardware.
+   * @param {'power' | 'tare' | 'mode' | 'log_trigger'} action
+   */
+  const publishDeviceCommand = useCallback((action) => {
+    if (clientRef.current?.connected) {
+      const topic = deviceCommandTopic('scale1');
+      const payload = JSON.stringify({ action });
+      clientRef.current.publish(topic, payload, { qos: 1 });
+    } else {
+      console.warn('[MQTT] Cannot publish command — not connected');
     }
   }, []);
 
@@ -250,5 +288,11 @@ export default function useMqtt() {
     switchStates,
     /** Publish a switch command to the hardware. */
     publishSwitchCommand,
+
+    /* ── Device state + command (Part 3: HMI remote control) ── */
+    /** @type {{ power?: 'on'|'off', mode?: string, tare?: boolean } | null} */
+    deviceState,
+    /** Publish a command to the scale hardware. */
+    publishDeviceCommand,
   };
 }
