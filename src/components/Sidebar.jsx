@@ -1,5 +1,6 @@
 import NavItem from './NavItem';
 import SidebarUserCard from './SidebarUserCard';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * 240px fixed sidebar per BUILD_SPEC.md Global Shell > Sidebar.
@@ -9,6 +10,7 @@ import SidebarUserCard from './SidebarUserCard';
  * @param {{ availability?: 'online' | 'offline' | null }} props
  */
 export default function Sidebar({ availability }) {
+  const { user, logout, isAuthenticated } = useAuth();
   const navItems = [
     { icon: 'precision_manufacturing', label: 'Live Grading', to: '/' },
     { icon: 'assignment', label: 'Operations Log', to: '/operations-log' },
@@ -57,7 +59,11 @@ export default function Sidebar({ availability }) {
       </nav>
 
       {/* User footer */}
-      <SidebarUserCard />
+      <SidebarUserCard
+        role={isAuthenticated ? user?.fullName : 'QA LEAD'}
+        station={isAuthenticated ? user?.role?.toUpperCase() : 'STATION_04'}
+        onLogout={isAuthenticated ? logout : undefined}
+      />
     </aside>
   );
 }
