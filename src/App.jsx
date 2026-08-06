@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
@@ -10,6 +11,7 @@ import DeviceManagement from './screens/DeviceManagement';
 import Reports from './screens/Reports';
 import OCRPipeline from './screens/OCRPipeline';
 import useMqtt from './hooks/useMqtt';
+import { useAuth } from './context/AuthContext';
 import { PERM } from './constants/permissions';
 
 /**
@@ -23,6 +25,7 @@ function getTopBarVariant(pathname) {
 
 export default function App() {
   const location = useLocation();
+  const { isAuthenticated } = useAuth();
   const {
     connectionState,
     availability,
@@ -36,6 +39,28 @@ export default function App() {
     switchStates,
     publishSwitchCommand,
   } = useMqtt();
+
+  const [deviceLocation, setDeviceLocation] = useState(null);
+
+  // Breadcrumb: fetch the first active device's location_path from the backend.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/devices`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.devices?.length > 0) {
+          // Prefer the first active device; fall back to the newest device.
+          const device = data.devices.find((d) => d.is_active) || data.devices[0];
+          setDeviceLocation(device.location_path ?? null);
+        }
+      })
+      .catch(() => {});
+  }, [isAuthenticated]);
 
   const topBarVariant = getTopBarVariant(location.pathname);
 
@@ -66,7 +91,11 @@ export default function App() {
   return (
     <div className="min-h-screen bg-background">
       <Sidebar availability={availability} />
-      <TopBar variant={topBarVariant} connectionState={connectionState} />
+      <TopBar
+        variant={topBarVariant}
+        connectionState={connectionState}
+        deviceLocation={deviceLocation}
+      />
       <main className="ml-60 p-lg min-h-[calc(100vh-64px)] bg-background">
         <Routes>
           <Route

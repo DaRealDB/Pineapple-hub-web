@@ -5,10 +5,18 @@
  * Dimensions: full width offset 240px (ml-60), 64px height (h-16), sticky top.
  * Background: surface with backdrop-blur-md. Border bottom: outline-variant.
  *
- * @param {{ variant?: 'default' | 'devices' | 'reports', connectionState?: string }} props
+ * @param {{
+ *   variant?: 'default' | 'devices' | 'reports',
+ *   connectionState?: string,
+ *   deviceLocation?: string | null,
+ * }} props
  */
-export default function TopBar({ variant = 'default', connectionState }) {
+export default function TopBar({ variant = 'default', connectionState, deviceLocation }) {
   const isLive = connectionState === 'connected';
+
+  const breadcrumb = deviceLocation
+    ? deviceLocation.replace(/\s*>\s*/g, ' > ') // Normalize separators
+    : 'Bukidnon Fresh Pineapple Corp.';
 
   return (
     <header className="sticky top-0 z-40 w-full bg-surface/80 backdrop-blur-md border-b border-outline-variant flex justify-between items-center h-16 px-lg ml-60">
@@ -16,7 +24,7 @@ export default function TopBar({ variant = 'default', connectionState }) {
       <div className="flex items-center gap-md">
         <div className="flex flex-col">
           <span className="font-label-caps text-label-caps text-on-surface-variant tracking-widest">
-            Bukidnon Corp. &gt; Plant 1 &gt; Grading Line B
+            {breadcrumb}
           </span>
         </div>
       </div>
