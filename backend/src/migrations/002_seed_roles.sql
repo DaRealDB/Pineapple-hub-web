@@ -45,7 +45,7 @@ INSERT INTO auth.users (id, email, password_hash, full_name, role_id, is_active)
 SELECT
   gen_random_uuid(),
   'admin@pineapple-hub.local',
-  '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy',
+  '$2a$10$2EoTFCT9NvzYedmYPvHKreEpxCkaSynvQBLVWCLM0MIu..lr/BV5a',
   'Admin User',
   (SELECT id FROM auth.roles WHERE name = 'admin'),
   true
