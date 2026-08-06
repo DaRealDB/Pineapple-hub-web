@@ -240,7 +240,7 @@ export default function LiveGrading({ mqtt }) {
         </div>
       </div>
 
-      {/* Right column: Hardware Status, Batch Log, Environment */}
+      {/* Right column: Hardware Status, Batch Log */}
       <div className="col-span-12 lg:col-span-4 flex flex-col gap-lg">
         {/* Hardware Status Card */}
         <div className="bg-surface-container border border-outline-variant rounded overflow-hidden flex flex-col">
@@ -318,40 +318,6 @@ export default function LiveGrading({ mqtt }) {
               Requires Node-RED SQLite logging endpoint
             </p>
           </div>
-        </div>
-
-        {/* Environment Monitor */}
-        <div className="bg-surface-container border border-outline-variant rounded p-lg">
-          <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-sm">
-            ENVIRONMENT
-          </h3>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-md">
-              <span className="material-symbols-outlined text-tertiary">thermostat</span>
-              <div>
-                <p className="font-label-caps text-label-caps text-on-surface-variant leading-none">
-                  AMB. TEMP
-                </p>
-                <p className="font-headline-sm font-bold text-on-surface-variant/30 tabular-nums">
-                  --.-°C
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-md">
-              <span className="material-symbols-outlined text-primary">humidity_percentage</span>
-              <div>
-                <p className="font-label-caps text-label-caps text-on-surface-variant leading-none">
-                  HUMIDITY
-                </p>
-                <p className="font-headline-sm font-bold text-on-surface-variant/30 tabular-nums">
-                  --%
-                </p>
-              </div>
-            </div>
-          </div>
-          <p className="font-body-md text-[11px] text-on-surface-variant/50 mt-sm text-center">
-            No environmental sensor connected
-          </p>
         </div>
       </div>
     </div>
