@@ -48,3 +48,13 @@ export function hmiStateTopic(switchId) {
 export function hmiSetTopic(switchId) {
   return `pineapple/hmi/${switchId}/set`;
 }
+
+/* ── Device command + state (Part 3: HMI remote control) ── */
+
+/** App → Firmware — command payload. Not retained, QoS 1 */
+export function deviceCommandTopic(deviceId) {
+  return `pineapple/${deviceId}/command`;
+}
+
+/** Firmware → App — device state confirmation. Not retained, QoS 1 */
+export const TOPIC_SCALE1_DEVICE_STATE = 'pineapple/scale1/device_state';
