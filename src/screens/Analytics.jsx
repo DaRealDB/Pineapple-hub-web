@@ -1,5 +1,3 @@
-import StatusPill from '../components/StatusPill';
-
 /**
  * Performance Analytics screen — route: /analytics
  *
@@ -23,15 +21,13 @@ export default function Analytics({ mqtt }) {
             Performance Analytics
           </h2>
           <div className="flex items-center gap-sm">
-            {isLive ? (
+            {isLive && (
               <>
                 <span className="w-2 h-2 rounded-full bg-[#10B981]" />
                 <span className="font-label-caps text-label-caps text-[#10B981]">
                   SYSTEM ACTIVE
                 </span>
               </>
-            ) : (
-              <StatusPill variant="offline" label="MQTT OFFLINE" />
             )}
           </div>
         </div>
@@ -92,29 +88,6 @@ export default function Analytics({ mqtt }) {
             System Uptime Score
           </h3>
           <EmptyChartPlaceholder />
-        </div>
-      </div>
-
-      {/* Bottom Status Bar */}
-      <div className="mt-lg bg-surface-container-low border border-outline-variant p-md rounded flex justify-between items-center">
-        <div className="flex gap-lg">
-          <div className="flex items-center gap-sm">
-            <span className="material-symbols-outlined text-xs text-on-surface-variant">speed</span>
-            <span className="font-label-caps text-[11px] text-on-surface-variant uppercase tracking-widest">
-              Line Speed: <span className="text-on-surface-variant/30">-- m/s</span>
-            </span>
-          </div>
-          <div className="flex items-center gap-sm">
-            <span className="material-symbols-outlined text-xs text-on-surface-variant">thermostat</span>
-            <span className="font-label-caps text-[11px] text-on-surface-variant uppercase tracking-widest">
-              Ambient: <span className="text-on-surface-variant/30">--.-°C</span>
-            </span>
-          </div>
-        </div>
-        <div className="text-right">
-          <span className="font-label-caps text-[10px] text-outline">
-            No historical data available
-          </span>
         </div>
       </div>
     </div>
