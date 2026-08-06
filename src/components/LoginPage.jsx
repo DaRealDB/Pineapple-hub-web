@@ -1,6 +1,6 @@
 import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
 
 export default function LoginPage() {
   const { login, isAuthenticated } = useAuth();
@@ -98,6 +98,13 @@ export default function LoginPage() {
 
         <p className="font-data-mono text-[10px] text-on-surface-variant/50 mt-lg text-center">
           Default: admin@pineapple-hub.local / admin123
+        </p>
+
+        <p className="font-body-md text-body-md text-on-surface-variant mt-md text-center">
+          Don&apos;t have an account?{' '}
+          <Link to="/register" className="text-primary hover:underline">
+            Create one
+          </Link>
         </p>
       </div>
     </div>

@@ -149,4 +149,81 @@ router.get('/me', authenticate, async (req, res) => {
   }
 });
 
+/**
+ * POST /api/auth/register
+ * Body: { email: string, password: string, fullName: string }
+ * Response: { token: string, user: { id, email, fullName, role } }
+ *
+ * Open registration — new users default to the 'employee' role.
+ * Returns a JWT so the user is logged in immediately after signup.
+ */
+router.post('/register', async (req, res) => {
+  try {
+    const { email, password, fullName } = req.body;
+
+    if (!email || !password || !fullName) {
+      return res.status(400).json({ error: 'Email, password, and full name are required' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check for existing user
+    const { rows: existing } = await query(
+      'SELECT id FROM auth.users WHERE email = $1',
+      [normalizedEmail]
+    );
+
+    if (existing.length > 0) {
+      return res.status(409).json({ error: 'An account with that email already exists' });
+    }
+
+    // Hash password and insert
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const { rows: users } = await query(
+      `INSERT INTO auth.users (email, password_hash, full_name, role_id)
+       VALUES ($1, $2, $3, (SELECT id FROM auth.roles WHERE name = 'employee'))
+       RETURNING id, email, full_name`,
+      [normalizedEmail, passwordHash, fullName.trim()]
+    );
+
+    const user = users[0];
+
+    // Create session and issue JWT (same pattern as login)
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const { rows: sessions } = await query(
+      'INSERT INTO auth.sessions (user_id, expires_at) VALUES ($1, $2) RETURNING id',
+      [user.id, expiresAt]
+    );
+
+    const token = jwt.sign(
+      {
+        sub: user.id,
+        email: user.email,
+        role: 'employee',
+        sid: sessions[0].id,
+      },
+      config.jwtSecret,
+      { expiresIn: config.jwtExpiresIn }
+    );
+
+    res.status(201).json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.full_name,
+        role: 'employee',
+      },
+    });
+  } catch (err) {
+    console.error('[Auth] Register error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export default router;

@@ -3,6 +3,7 @@ import { Routes, Route, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import LoginPage from './components/LoginPage';
+import RegisterPage from './components/RegisterPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import LiveGrading from './screens/LiveGrading';
 import OperationsLog from './screens/OperationsLog';
@@ -78,12 +79,13 @@ export default function App() {
     publishSwitchCommand,
   };
 
-  // Login page — no shell. useMqtt() stays at the top level (rules of hooks),
-  // and LoginPage redirects to / when already authenticated.
-  if (location.pathname === '/login') {
+  // Login & register pages — no shell. useMqtt() stays at the top level (rules of hooks),
+  // and both pages redirect to / when already authenticated.
+  if (location.pathname === '/login' || location.pathname === '/register') {
     return (
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
       </Routes>
     );
   }
