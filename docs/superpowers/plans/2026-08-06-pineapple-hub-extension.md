@@ -159,7 +159,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 **Interfaces:**
 - Produces: SQL files that create `grading` and `auth` schemas with all tables, indexes, and seed data
 
-- [ ] **Step 1: Write 001_schemas.sql**
+- [x] **Step 1: Write 001_schemas.sql**
 
 ```sql
 -- 001_schemas.sql — Create grading and auth schemas with all tables
@@ -251,7 +251,7 @@ CREATE TABLE auth.sessions (
 COMMIT;
 ```
 
-- [ ] **Step 2: Write 002_seed_roles.sql**
+- [x] **Step 2: Write 002_seed_roles.sql**
 
 ```sql
 -- 002_seed_roles.sql — Seed roles, permissions, role_permissions, and default admin user
@@ -310,7 +310,7 @@ WHERE NOT EXISTS (SELECT 1 FROM auth.users WHERE email = 'admin@pineapple-hub.lo
 COMMIT;
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add backend/src/migrations/001_schemas.sql backend/src/migrations/002_seed_roles.sql
