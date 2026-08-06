@@ -27,6 +27,14 @@ export default function useCrateLogCapture(mqtt, latestOcr) {
   const lastCaptureRef = useRef(0);
   const pendingRef = useRef(null);
 
+  // Keep a mutable ref to latestOcr so the manual-trigger effect
+  // always reads the current value regardless of its dependency array.
+  const latestOcrRef = useRef(latestOcr);
+  latestOcrRef.current = latestOcr;
+
+  // Track manual trigger count to detect new button presses.
+  const prevManualTriggerRef = useRef(mqtt?.manualTriggerCount ?? 0);
+
   useEffect(() => {
     if (!mqtt || !latestOcr) return;
 
@@ -80,4 +88,58 @@ export default function useCrateLogCapture(mqtt, latestOcr) {
       }
     };
   }, [mqtt?.weightG, mqtt?.dataValid, mqtt?.captureArmed, latestOcr]);
+
+  /**
+   * Manual trigger capture — fires when the firmware responds to a
+   * "Log Trigger" button press with capture_trigger: "manual_button"
+   * in the data payload. Bypasses zone/OCR prerequisites (user intent)
+   * but still requires a live weight reading and respects the cooldown.
+   */
+  useEffect(() => {
+    if (!mqtt) return;
+
+    const count = mqtt.manualTriggerCount ?? 0;
+    if (count <= prevManualTriggerRef.current) return;
+    prevManualTriggerRef.current = count;
+
+    const { weightG, grade, zone1, zone2 } = mqtt;
+    const ocr = latestOcrRef.current;
+
+    if (weightG == null) {
+      console.warn('[CrateLogCapture] Manual trigger ignored — no weight reading available');
+      return;
+    }
+
+    // Respect the cooldown window to avoid double-captures
+    const now = Date.now();
+    if (now - lastCaptureRef.current < CAPTURE_WINDOW_MS) {
+      console.warn('[CrateLogCapture] Manual trigger ignored — within cooldown window');
+      return;
+    }
+
+    lastCaptureRef.current = now;
+
+    const logEntry = {
+      device_id: 'scale1',
+      batch_id: ocr?.text || null,
+      crate_weight_g: weightG,
+      grade: grade || 'PENDING_FORMULA',
+      zone1_status: zone1 || 'unknown',
+      zone2_status: zone2 || 'unknown',
+      ocr_extracted_id: ocr?.text || null,
+      ocr_confidence: ocr?.confidence != null
+        ? parseFloat((ocr.confidence * 100).toFixed(2))
+        : null,
+      capture_trigger: 'manual_button',
+      captured_at: new Date().toISOString(),
+    };
+
+    post('/api/crate-logs', logEntry)
+      .then((data) => {
+        console.log('[CrateLogCapture] Manual trigger logged:', data.log.id);
+      })
+      .catch((err) => {
+        console.error('[CrateLogCapture] Manual trigger failed:', err);
+      });
+  }, [mqtt?.manualTriggerCount]);
 }

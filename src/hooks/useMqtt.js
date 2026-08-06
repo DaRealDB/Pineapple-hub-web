@@ -76,6 +76,9 @@ export default function useMqtt() {
     /** @type {{ power?: 'on'|'off', mode?: string, tare?: boolean } | null} */ (null)
   );
 
+  /* ── Manual trigger counter (incremented on each manual_button event) ── */
+  const [manualTriggerCount, setManualTriggerCount] = useState(0);
+
   /**
    * Whether the current weight/grade reading should be treated as valid
    * live data. Combines: MQTT connected + scale online + no HX711 fault +
@@ -142,6 +145,12 @@ export default function useMqtt() {
             : null
         );
         setTs(typeof data.ts === 'number' ? data.ts : null);
+
+        // Manual log trigger detection — firmware includes capture_trigger
+        // in the data payload when responding to a manual_button command
+        if (data.capture_trigger === 'manual_button') {
+          setManualTriggerCount((c) => c + 1);
+        }
       } catch (e) {
         console.error('[MQTT] Failed to parse data payload:', e);
       }
@@ -294,5 +303,9 @@ export default function useMqtt() {
     deviceState,
     /** Publish a command to the scale hardware. */
     publishDeviceCommand,
+
+    /* ── Manual trigger counter ── */
+    /** Increments on each capture_trigger: "manual_button" data message from firmware. */
+    manualTriggerCount,
   };
 }
