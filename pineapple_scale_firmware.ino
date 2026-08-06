@@ -210,6 +210,8 @@ bool btn3PrevState = HIGH, btn4PrevState = HIGH;
 unsigned long tareFlashStart = 0;
 bool tareFlashing = false;
 unsigned long lastTareMs = 0;
+uint16_t tareCount = 0;         // increments on each tare — HMI uses this to detect change
+uint16_t logTriggerCount = 0;   // increments on each log trigger — HMI uses this to detect change
 
 // Periodic state publish
 unsigned long lastStatePublish = 0;
@@ -315,6 +317,10 @@ void doPowerToggle() {
     digitalWrite(BTN3_LED, HIGH);
     digitalWrite(BTN4_LED, displayKg ? HIGH : LOW);
     lcd.backlight();
+
+    // Force immediate MQTT reconnect so publishDeviceState() works
+    lastMqttReconnectAttempt = 0;
+    ensureMqttConnected();
   } else {
     Serial.println("[ACTION] Power: STANDBY");
     digitalWrite(BTN2_LED, LOW);
@@ -342,6 +348,7 @@ void doTare() {
     lastValidWeight_g = 0;
     lastDataValid = false;
     lastTareMs = millis();
+    tareCount++;  // increment so HMI panel detects the change
 
     tareFlashing = true;
     tareFlashStart = millis();
@@ -371,6 +378,7 @@ void doModeToggle() {
 // Team must confirm before production deploy.
 void doManualLogTrigger() {
   Serial.println("[ACTION] Manual log trigger — publishing log event");
+  logTriggerCount++;  // increment so HMI panel detects the change
 
   // Flash LED to confirm
   digitalWrite(BTN2_LED, LOW);
@@ -575,7 +583,9 @@ void publishDeviceState() {
   // ── Fields the HMI Panel reads ──
   doc["power"] = systemActive ? "on" : "off";
   doc["mode"] = displayKg ? "kg" : "g";
-  doc["tare"] = (lastTareMs > 0);  // true if tare has been performed
+  doc["tare"] = (lastTareMs > 0);                // true if tare has been performed
+  doc["tare_count"] = tareCount;                  // increments each tare — HMI uses for change detection
+  doc["log_trigger_count"] = logTriggerCount;     // increments each trigger — HMI uses for change detection
 
   // ── Extended telemetry (for Device Management screen) ──
   doc["system_active"] = systemActive;

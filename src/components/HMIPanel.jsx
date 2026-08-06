@@ -51,7 +51,7 @@ export default function HMIPanel({ deviceState, publishDeviceCommand, isLive }) 
               label="TARE"
               icon="scale"
               action="tare"
-              currentState={deviceState?.tare ? 'on' : 'off'}
+              currentState={deviceState?.tare_count ?? 0}
               publish={publishDeviceCommand}
               isLive={isLive}
               isMomentary
@@ -72,7 +72,7 @@ export default function HMIPanel({ deviceState, publishDeviceCommand, isLive }) 
             label="LOG TRIGGER"
             icon="note_add"
             action="log_trigger"
-            currentState={null}
+            currentState={deviceState?.log_trigger_count ?? 0}
             publish={publishDeviceCommand}
             isLive={isLive}
             isMomentary
