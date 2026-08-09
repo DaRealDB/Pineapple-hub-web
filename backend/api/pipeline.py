@@ -71,6 +71,15 @@ class PipelineStatus(BaseModel):
     metrics: Dict
 
 
+# Global state machine reference (set by pipeline worker, read by manual-log endpoint)
+_active_state_machine = None
+
+
+def get_active_state_machine():
+    """Returns the active CrateStateMachine, or None if pipeline not running."""
+    return _active_state_machine
+
+
 # Global pipeline state
 pipeline_state = {
     "is_running": False,
@@ -326,21 +335,88 @@ async def get_pipeline_metrics(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/manual-log", response_model=dict)
+async def manual_log_trigger():
+    """
+    Manually trigger a crate log commit if the state machine is READY.
+    Called by the Express backend when the HMI LOG TRIGGER button is pressed.
+
+    Returns 409 if state machine is not in READY state.
+    """
+    sm = get_active_state_machine()
+    if sm is None:
+        raise HTTPException(status_code=503, detail={
+            "success": False,
+            "reason": "pipeline_not_running",
+            "missing": ["state_machine"],
+            "current_state": "NONE",
+        })
+
+    result = sm.manual_log_trigger()
+
+    if not result["success"]:
+        raise HTTPException(status_code=409, detail=result)
+
+    return result
+
+
+@router.get("/crate-logs")
+async def get_crate_logs(limit: int = 20):
+    """Get recent crate logs from the operations_log table."""
+    try:
+        from database.repository import DatabaseRepository
+        from sqlalchemy import text
+        repo = DatabaseRepository()
+        if not repo.db:
+            return {"logs": [], "total": 0}
+        rows = repo.db.execute(
+            text(
+                "SELECT id, batch_id, weight_g, grade, ocr_text, "
+                "ocr_confidence, audit_status, metadata, timestamp "
+                "FROM operations_log ORDER BY timestamp DESC LIMIT :lim"
+            ),
+            {"lim": limit},
+        ).fetchall()
+        logs = []
+        for r in rows:
+            meta = r.metadata or {}
+            logs.append({
+                "id": r.id,
+                "batch_id": r.batch_id,
+                "weight_g": float(r.weight_g) if r.weight_g else None,
+                "grade": r.grade,
+                "ocr_text": r.ocr_text,
+                "ocr_confidence": float(r.ocr_confidence) if r.ocr_confidence else None,
+                "audit_status": r.audit_status,
+                "capture_trigger": meta.get("capture_trigger", "unknown") if isinstance(meta, dict) else "unknown",
+                "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            })
+        return {"logs": logs, "total": len(logs)}
+    except Exception as e:
+        logger.error(f"Error fetching crate logs: {e}")
+        return {"logs": [], "total": 0}
+
+
 def pipeline_worker(stop_event, session_id):
     """
-    Pipeline worker — decoupled capture + OCR architecture.
+    Pipeline worker — decoupled capture + YOLO + OCR architecture.
 
     - Capture thread: reads frames at ~LIVE_VIEW_FPS, flushes stale buffers,
-      broadcasts lightweight JPEG frames for smooth live preview.
-    - OCR thread: grabs the latest frame at OCR_INTERVAL, resizes for speed,
-      runs OCR via the engine directly (bypasses HTTP layer).
+      runs YOLO detection, draws bounding boxes, broadcasts annotated JPEG
+      frames for smooth live preview with detection overlays.
+    - OCR thread: grabs the latest YOLO detections at OCR_INTERVAL, crops
+      to the primary box region (if detected), runs OCR on the crop.
+      Hands in frame → OCR suppressed (safety). No box → falls back to
+      full-frame OCR.
     - Single persistent asyncio event loop for ALL WebSocket broadcasts.
       Eliminates the per-frame event-loop create/destroy overhead (~15-45ms).
     """
     from api.webcam import get_webcam_capture
     from core.ocr_engine import OCREngine
     from core.deduplication import DeduplicationManager
+    from core.yolo_detector import YOLODetector
     from websocket.server import manager
+    from websocket.sse_manager import sse_manager
     import base64
     import time
     import cv2
@@ -351,12 +427,24 @@ def pipeline_worker(stop_event, session_id):
 
     # ── one persistent event loop for all WS broadcasts ──────────────
     loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     # ── shared state between threads ─────────────────────────────────
     latest_frame_lock = threading.Lock()
     latest_frame = {"data": None, "timestamp": 0}
 
-    # ── OCR engine instances (thread-local) ─────────────────────────
+    # YOLO detections shared between capture and OCR threads
+    latest_detections_lock = threading.Lock()
+    latest_detections = {"data": None, "timestamp": 0}
+
+    # ── engine instances (created once, shared across threads) ───────
+    yolo_enabled = getattr(settings, "YOLO_ENABLED", "true").lower() == "true"
+    yolo_detector = YOLODetector(
+        weights_path=settings.YOLO_WEIGHTS_PATH,
+        confidence=settings.YOLO_CONFIDENCE_THRESHOLD,
+        image_size=settings.YOLO_IMAGE_SIZE,
+        enabled=yolo_enabled,
+    )
     ocr_engine = OCREngine(
         engine=settings.OCR_ENGINE,
         gpu_enabled=settings.GPU_ENABLED,
@@ -368,13 +456,41 @@ def pipeline_worker(stop_event, session_id):
         strategy=settings.DEDUP_STRATEGY,
     )
 
+    # ── crate state machine (backend-driven logging) ───────────────
+    from core.crate_state_machine import CrateStateMachine
+    sm_enabled = getattr(settings, "CRATE_STATE_MACHINE_ENABLED", True)
+    state_machine = CrateStateMachine() if sm_enabled else None
+
+    # Expose state machine to the manual-log API endpoint
+    global _active_state_machine
+    _active_state_machine = state_machine
+
+    mqtt_client = None
+    if state_machine:
+        logger.info("[CrateSM] State machine initialised "
+                    f"cooldown={state_machine.cooldown_ms}ms "
+                    f"ttl={state_machine.data_ttl_ms}ms "
+                    f"auto_log_delay={state_machine._auto_log_delay_s}s")
+        # ── MQTT client for scale weight data ─────────────────────
+        try:
+            from core.mqtt_client import ScaleMqttClient
+            mqtt_client = ScaleMqttClient(state_machine=state_machine)
+            if mqtt_client.connect():
+                logger.info("[CrateSM] MQTT scale client connected")
+            else:
+                logger.warning("[CrateSM] MQTT scale client failed to connect — "
+                              "weight data will not be available")
+        except Exception as e:
+            logger.warning(f"[CrateSM] MQTT client init failed: {e}")
+
     # ── live-view throttle ──────────────────────────────────────────
     live_view_fps = getattr(settings, "LIVE_VIEW_FPS", 15)
 
     def capture_loop():
-        """Fast capture thread — drains stale frames, broadcasts at live-view rate."""
+        """Fast capture thread — drains stale frames, runs YOLO, broadcasts annotated frames."""
         last_broadcast = 0.0
         broadcast_interval = 1.0 / max(live_view_fps, 1)
+        frame_idx = 0
 
         while not stop_event.is_set():
             try:
@@ -384,7 +500,6 @@ def pipeline_worker(stop_event, session_id):
                     continue
 
                 # Drain stale frames from OpenCV's internal buffer
-                # so we always work with the most recent frame.
                 for _ in range(3):
                     capture.grab()
 
@@ -394,20 +509,40 @@ def pipeline_worker(stop_event, session_id):
                     continue
 
                 now = time.time()
+                frame_idx += 1
 
-                # Store latest frame for the OCR thread
+                # Store raw frame for the OCR thread
                 with latest_frame_lock:
                     latest_frame["data"] = frame
                     latest_frame["timestamp"] = now
 
-                # Broadcast for live view (throttled to avoid flooding the WS)
+                # ── YOLO detection (every frame for live overlay) ─────
+                detections = yolo_detector.detect(frame)
+
+                # Store detections for the OCR thread
+                with latest_detections_lock:
+                    latest_detections["data"] = detections
+                    latest_detections["timestamp"] = now
+
+                # ── feed detections to crate state machine ──────────────
+                if state_machine:
+                    state_machine.on_yolo_detection(
+                        detections, "", 0.0
+                    )
+
+                # ── draw detections on the broadcast frame ────────────
+                display_frame = yolo_detector.draw_detections(frame, detections)
+
+                # Broadcast for live view (throttled)
                 if now - last_broadcast >= broadcast_interval:
-                    # Lower JPEG quality = smaller payload = lower latency
                     encode_params = [cv2.IMWRITE_JPEG_QUALITY, 60]
-                    _, jpeg = cv2.imencode('.jpg', frame, encode_params)
-                    # .tobytes() is required — base64.b64encode on a raw
-                    # numpy array can read wrong memory on some Python/numpy combos
-                    frame_b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
+                    _, jpeg = cv2.imencode('.jpg', display_frame, encode_params)
+                    jpeg_bytes = jpeg.tobytes()
+                    frame_b64 = base64.b64encode(jpeg_bytes).decode('utf-8')
+
+                    # Push to MJPEG shared buffer (zero re-encode, zero camera contention)
+                    from api.webcam import update_shared_frame
+                    update_shared_frame(jpeg_bytes)
 
                     asyncio.run_coroutine_threadsafe(
                         manager.broadcast({
@@ -419,27 +554,63 @@ def pipeline_worker(stop_event, session_id):
                         }),
                         loop,
                     )
+                    # SSE broadcast (thread-safe, no event loop needed)
+                    sse_manager.broadcast({
+                        "type": "webcam_frame",
+                        "payload": {
+                            "frame_data": frame_b64,
+                            "timestamp": now,
+                        },
+                    })
                     last_broadcast = now
+
+                # ── broadcast YOLO detections at lower rate (every other frame) ──
+                if frame_idx % 2 == 0:
+                    yolo_msg = {
+                        "type": "yolo_detections",
+                        "payload": {
+                            "hands_present": detections["hands_present"],
+                            "box_present": detections["box_present"],
+                            "primary_box": detections["primary_box"],
+                            "hands": detections["hands"],
+                            "boxes": detections["boxes"],
+                            "hand_count": len(detections["hands"]),
+                            "box_count": len(detections["boxes"]),
+                            "total_detections": detections["total_detections"],
+                            "inference_ms": detections["inference_ms"],
+                            "timestamp": now,
+                            "frame_width": 640,
+                            "frame_height": 480,
+                        },
+                    }
+                    asyncio.run_coroutine_threadsafe(
+                        manager.broadcast(yolo_msg), loop,
+                    )
+                    sse_manager.broadcast(yolo_msg)
 
             except Exception as e:
                 logger.error(f"Capture thread error: {e}")
                 time.sleep(0.1)
 
     def ocr_loop():
-        """OCR thread — grabs latest frame at OCR_INTERVAL and processes it."""
+        """OCR thread — grabs latest YOLO detections, crops to box, runs OCR."""
         frame_counter = 0
         error_counter = 0
+        yolo_error_counter = 0
         ocr_start_time = time.time()
-        prev_text_hash = None  # for simple frame-change skip
+        prev_text_hash = None
 
         while not stop_event.is_set():
             try:
                 t_start = time.time()
 
-                # Grab the latest frame
+                # Grab the latest frame and YOLO detections
                 with latest_frame_lock:
                     frame = latest_frame["data"]
                     frame_ts = latest_frame["timestamp"]
+
+                with latest_detections_lock:
+                    detections = latest_detections["data"]
 
                 if frame is None:
                     time.sleep(0.1)
@@ -447,47 +618,72 @@ def pipeline_worker(stop_event, session_id):
 
                 frame_counter += 1
 
-                # ── fast-change detection: skip OCR if frame looks identical ──
-                # Compare a quick downsampled hash (32x32 grayscale)
+                # ── fast-change detection ──
                 small = cv2.resize(frame, (32, 32))
                 gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
                 frame_hash = hash(gray.tobytes())
 
                 if frame_hash == prev_text_hash and prev_text_hash is not None:
-                    # Frame hasn't changed — skip expensive OCR
                     elapsed = time.time() - t_start
                     time.sleep(max(0, settings.OCR_INTERVAL_SECONDS - elapsed))
                     continue
 
                 prev_text_hash = frame_hash
 
-                # ── one-time debug: save first OCR frame to disk ──
-                if frame_counter == 1:
-                    try:
-                        import os as _os
-                        _debug_path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "debug_ocr_frame.jpg")
-                        cv2.imwrite(_debug_path, frame)
-                        logger.info(f"Saved debug frame to {_debug_path} — open this file to see what the camera captures")
-                    except Exception:
-                        pass
+                # ── decide what to OCR ────────────────────────────────
+                ocr_frame = None
+                crop_source = "full_frame"   # default
+                hands_suppressed = False
 
-                # ── resize for OCR (smaller = faster recognition) ──
-                ocr_w = getattr(settings, "OCR_RESIZE_WIDTH", 320)
-                ocr_h = getattr(settings, "OCR_RESIZE_HEIGHT", 240)
-                ocr_frame = cv2.resize(frame, (ocr_w, ocr_h))
+                if detections is not None and detections.get("hands_present"):
+                    # Safety: hands detected in frame — suppress OCR
+                    hands_suppressed = True
+                    logger.debug(
+                        f"OCR frame #{frame_counter}: HANDS DETECTED — OCR suppressed (safety)"
+                    )
+
+                if not hands_suppressed and detections is not None and detections.get("primary_box"):
+                    # Crop to the primary box region for focused OCR
+                    primary = detections["primary_box"]
+                    cropped = yolo_detector.crop_to_box(frame, primary["bbox"], padding=5)
+                    if cropped is not None and cropped.size > 0:
+                        ocr_frame = cropped
+                        crop_source = "yolo_box"
+
+                if ocr_frame is None:
+                    # Fallback: full-frame OCR (resized)
+                    ocr_w = getattr(settings, "OCR_RESIZE_WIDTH", 320)
+                    ocr_h = getattr(settings, "OCR_RESIZE_HEIGHT", 240)
+                    ocr_frame = cv2.resize(frame, (ocr_w, ocr_h))
+
+                # ── encode for OCR ────────────────────────────────────
                 _, jpeg = cv2.imencode('.jpg', ocr_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                 frame_b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
 
-                # ── OCR (synchronous, runs in this thread) ──
-                ocr_raw = ocr_engine.process_image(frame_b64)
+                # ── OCR (if not suppressed) ───────────────────────────
+                if hands_suppressed:
+                    ocr_raw = {"text": "", "confidence": 0.0, "bbox_data": None}
+                    text = ""
+                else:
+                    ocr_raw = ocr_engine.process_image(frame_b64)
+                    text = ocr_raw.get("text", "")
 
                 # ── dedup ──
-                text = ocr_raw.get("text", "")
                 is_dup, sim_score = dedup.check_duplicate(text, session_id)
                 if not is_dup and text:
                     dedup.add_to_history(text, session_id)
 
                 processing_ms = int((time.time() - t_start) * 1000)
+                yolo_ms = detections.get("inference_ms", 0) if detections else 0
+
+                # ── crate state machine: feed OCR result ──────────────
+                sm_result = None
+                if state_machine and not hands_suppressed and text:
+                    h, w = frame.shape[:2]
+                    sm_result = state_machine.on_yolo_detection(
+                        detections or {}, text,
+                        ocr_raw.get("confidence", 0.0), w,
+                    )
 
                 # ── save to DB (best-effort) ──
                 try:
@@ -506,52 +702,85 @@ def pipeline_worker(stop_event, session_id):
                 except Exception:
                     pass
 
-                # ── broadcast OCR result ──
+                # ── broadcast OCR result (with YOLO context) ──────────
+                ocr_payload = {
+                    "type": "ocr_result",
+                    "payload": {
+                        "text": text,
+                        "confidence": ocr_raw.get("confidence", 0.0),
+                        "bbox_data": ocr_raw.get("bbox_data"),
+                        "processing_time_ms": processing_ms,
+                        "is_duplicate": is_dup,
+                        "similarity_score": sim_score,
+                        "frame_number": frame_counter,
+                        "crop_source": crop_source,
+                        "hands_suppressed": hands_suppressed,
+                        "yolo_inference_ms": yolo_ms,
+                    },
+                }
                 asyncio.run_coroutine_threadsafe(
-                    manager.broadcast({
-                        "type": "ocr_result",
-                        "payload": {
-                            "text": text,
-                            "confidence": ocr_raw.get("confidence", 0.0),
-                            "bbox_data": ocr_raw.get("bbox_data"),
-                            "processing_time_ms": processing_ms,
-                            "is_duplicate": is_dup,
-                            "similarity_score": sim_score,
-                            "frame_number": frame_counter,
-                        },
-                    }),
-                    loop,
+                    manager.broadcast(ocr_payload), loop,
                 )
+                sse_manager.broadcast(ocr_payload)
 
                 # ── record metrics ──
                 try:
                     session_manager.record_metric(session_id, "processing_time_ms", processing_ms)
                     session_manager.record_metric(session_id, "fps", 1000.0 / max(processing_ms, 1))
+                    if not hands_suppressed:
+                        session_manager.record_metric(session_id, "yolo_inference_ms", yolo_ms)
                 except Exception:
                     pass
 
-                # ── broadcast status ──
+                # ── broadcast pipeline status (with YOLO metrics) ─────
+                status_payload = {
+                    "type": "pipeline_status",
+                    "payload": {
+                        "pipeline_state": "running",
+                        "fps": 1000.0 / max(processing_ms, 1),
+                        "processing_time_ms": processing_ms,
+                        "ocr_count": frame_counter,
+                        "error_count": error_counter,
+                        "yolo_error_count": yolo_error_counter,
+                        "uptime_seconds": int(time.time() - ocr_start_time),
+                        "total_processed": frame_counter,
+                        "yolo_enabled": yolo_detector.is_ready,
+                        "yolo_inference_ms": yolo_ms,
+                        "crop_source": crop_source,
+                        "hands_suppressed": hands_suppressed,
+                        "crate_state": state_machine.get_state() if state_machine else None,
+                        "sm_log_result": sm_result,
+                    },
+                }
                 asyncio.run_coroutine_threadsafe(
-                    manager.broadcast({
-                        "type": "pipeline_status",
-                        "payload": {
-                            "pipeline_state": "running",
-                            "fps": 1000.0 / max(processing_ms, 1),
-                            "processing_time_ms": processing_ms,
-                            "ocr_count": frame_counter,
-                            "error_count": error_counter,
-                            "uptime_seconds": int(time.time() - ocr_start_time),
-                            "total_processed": frame_counter,
-                        },
-                    }),
-                    loop,
+                    manager.broadcast(status_payload), loop,
                 )
+                sse_manager.broadcast(status_payload)
 
-                logger.info(
-                    f"OCR frame #{frame_counter}: '{text[:60]}' "
-                    f"conf={ocr_raw.get('confidence', 0):.2f} "
-                    f"dup={is_dup} {processing_ms}ms"
-                )
+                # ── broadcast standalone crate_state (frontend listens for this) ──
+                if state_machine:
+                    sm_snap = state_machine.get_state()
+                    crate_payload = {
+                        "type": "crate_state",
+                        "payload": sm_snap,
+                    }
+                    sse_manager.broadcast(crate_payload)
+                    asyncio.run_coroutine_threadsafe(
+                        manager.broadcast(crate_payload), loop,
+                    )
+
+                if hands_suppressed:
+                    logger.info(
+                        f"OCR frame #{frame_counter}: SAFETY — hands detected, OCR suppressed "
+                        f"({processing_ms}ms)"
+                    )
+                else:
+                    logger.info(
+                        f"OCR frame #{frame_counter}: '{text[:60]}' "
+                        f"conf={ocr_raw.get('confidence', 0):.2f} "
+                        f"dup={is_dup} crop={crop_source} "
+                        f"{processing_ms}ms (YOLO {yolo_ms:.0f}ms)"
+                    )
 
                 # ── sleep for OCR interval ──
                 elapsed = time.time() - t_start
@@ -590,5 +819,29 @@ def pipeline_worker(stop_event, session_id):
 
     capture_thread.join(timeout=3)
     ocr_thread.join(timeout=3)
+
+    # ── release webcam hardware ────────────────────────────────────
+    # Even if threads timed out (stuck in DirectShow read), this
+    # releases through the global ref — idempotent and safe.
+    try:
+        from api.webcam import release_webcam_hardware
+        release_webcam_hardware()
+    except Exception as e:
+        logger.warning(f"Webcam release in worker shutdown failed: {e}")
+
+    # Reset state machine + disconnect MQTT
+    if mqtt_client:
+        try:
+            mqtt_client.disconnect()
+        except Exception:
+            pass
+    if state_machine:
+        try:
+            state_machine.reset()
+        except Exception:
+            pass
+
+    # Clear the module-level reference so manual-log endpoint returns 503
+    _active_state_machine = None
 
     logger.info(f"Pipeline worker stopped for session {session_id}")

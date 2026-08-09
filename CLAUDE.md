@@ -87,8 +87,21 @@ backend/
 │       ├── 001_schemas.sql   # grading + auth schemas (7 tables)
 │       ├── 002_seed_roles.sql # Roles, permissions, default admin
 │       └── run.js            # Migration runner (idempotent, transactional)
+├── core/
+│   ├── yolo_detector.py   # YOLOv8 object detection (hands/boxes)
+│   └── ocr_engine.py      # EasyOCR text recognition wrapper
 └── main.py                # Python OCR backend (separate FastAPI app)
 ```
+
+### Weights (`weights/`)
+```
+weights/
+├── best.pt                # YOLOv8 nano — best checkpoint (99.5% mAP@50, 6.3 MB)
+└── last.pt                # YOLOv8 nano — final epoch checkpoint
+```
+
+Trained per `architecture.md` — detects hands (class 0) and boxes/crates (class 1).
+Loaded by `backend/core/yolo_detector.py` at pipeline start.
 
 ### Frontend (`src/`)
 ```
@@ -109,6 +122,7 @@ src/
 │   ├── ProtectedRoute.jsx  # Auth + permission route guard
 │   ├── SwitchPanel.jsx     # Legacy placeholder — replaced by HMIPanel
 │   ├── WebcamFeed.jsx      # Live webcam frame (base64 JPEG from WS)
+│   ├── ErrorBoundary.jsx   # React error boundary — catches render crashes
 │   ├── OCRResults.jsx      # Real-time OCR result list
 │   └── PipelineStatus.jsx  # OCR pipeline health metrics
 ├── screens/
@@ -228,9 +242,28 @@ Server-side enforcement via `requirePermission()` middleware. Client-side hiding
 
 5. **Express backend added** — Supersedes the original "no new backend" rule. Needed for PostgreSQL, auth/RBAC, and HMI command proxying. Node-RED retained for MQTT broker, SQLite logging, CSV export.
 
-6. **No duplicated logic** — Button actions extracted into named functions called by both physical buttons and MQTT commands. One Analytics component tree, permission-gated, not two separate screens.
+6. **YOLO + OCR unified pipeline** — The YOLOv8 object detector and EasyOCR text recognition now run as a single pipeline. YOLO detects crates (class 1) → OCR crops to the bounding box for focused text recognition. Hand detection (class 0) suppresses OCR for safety. See `architecture.md` for the YOLO training details.
+
+7. **Error boundary** — `ErrorBoundary.jsx` wraps all authenticated routes so render crashes in one screen don't unmount the sidebar/topbar shell.
 
 ---
+
+## Recent Changes (2026-08-07 Session)
+
+### Added
+- **YOLO + OCR unified pipeline** — `backend/core/yolo_detector.py` loads weights from `weights/best.pt` (YOLOv8 nano, 99.5% mAP@50). Pipeline worker now runs: capture → YOLO detect → crop to crate bbox → OCR on crop. Hand detection suppresses OCR for safety. YOLO detections broadcast over WebSocket.
+- **YOLO config** — `YOLO_WEIGHTS_PATH`, `YOLO_CONFIDENCE_THRESHOLD`, `YOLO_IMAGE_SIZE`, `YOLO_ENABLED` in `backend/utils/config.py`
+- **Error boundary** — `ErrorBoundary.jsx` wraps all authenticated routes so render crashes in one screen don't unmount the shell.
+- **Frontend YOLO display** — LiveGrading shows YOLO crate/hand detection zones, crop source indicator (🎯 CROPPED / 📐 FULL), hands-suppressed OCR warning, and YOLO inference ms in pipeline stats.
+
+### Changed
+- **useWebSocket.js** — Fixed rules-of-hooks violation (early returns before useState). New `yoloDetections` state + handler.
+- **Pipeline stats** — Grid expanded from 3 to 4 columns (FPS, OCR, MS, YOLO).
+- **WebSocket contract** — New message type `yolo_detections` with hands_present, box_present, primary_box, inference_ms.
+- **OCR result payload** — Now includes `crop_source`, `hands_suppressed`, `yolo_inference_ms`.
+
+### Fixed
+- **Rules of hooks violation** in `useWebSocket.js` — early `return` before hooks caused React internal error when env vars missing.
 
 ## Recent Changes (2026-08-06 Session)
 

@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import StatusPill from '../components/StatusPill';
 import HMIPanel from '../components/HMIPanel';
 import WebcamFeed from '../components/WebcamFeed';
-import PipelineStatus from '../components/PipelineStatus';
-import useWebSocket from '../hooks/useWebSocket';
+import YoloOverlay from '../components/YoloOverlay';
+import useSSE from '../hooks/useSSE';
 import useCrateLogCapture from '../hooks/useCrateLogCapture';
 import { crateGradeLabel } from '../utils/formatters';
 
@@ -16,14 +16,24 @@ function formatFetchError(err, url) {
   return err.message || String(err);
 }
 
-/**
- * Live Grading screen — route: /
- *
- * Primary operations dashboard. Shows live crate weight, HMI controls,
- * full OCR pipeline (camera + image upload), weight gauge, and crate log.
- *
- * @param {{ mqtt: object }} props
- */
+// Truncate to 3 decimal places (no rounding)
+const trunc3 = (n) => Math.floor(n * 1000) / 1000;
+
+// ── shared card chrome ────────────────────────────────────────────────
+const card = 'bg-surface-container border border-outline-variant rounded p-lg';
+const cardTitle = 'font-label-caps text-label-caps text-on-surface-variant';
+
+// ── consistent status pill mapping ────────────────────────────────────
+function connectionPill(connected) {
+  return <StatusPill variant={connected ? 'online' : 'offline'} label={connected ? 'MQTT LIVE' : 'MQTT OFFLINE'} />;
+}
+function scalePill(online, hasFault, isLive) {
+  if (!online) return <StatusPill variant="offline" label="SCALE OFFLINE" />;
+  if (hasFault) return <StatusPill variant="flagged" label="SENSOR FAULT" />;
+  if (!isLive) return <StatusPill variant="pending" label="NO DATA" />;
+  return <StatusPill variant="online" label="LIVE" />;
+}
+
 export default function LiveGrading({ mqtt }) {
   const {
     connectionState,
@@ -32,104 +42,88 @@ export default function LiveGrading({ mqtt }) {
     grade,
     status,
     dataValid,
+    zone1,
+    zone2,
+    captureArmed,
     deviceState,
     publishDeviceCommand,
+    publishLogTrigger,
   } = mqtt;
 
-  // ── OCR pipeline WebSocket ──
   const {
     connectionState: ocrConnState,
     connectionError,
     ocrResults,
     pipelineStatus,
-    webcamFrame: wsWebcamFrame,
-  } = useWebSocket();
+    yoloDetections,
+    crateState,
+  } = useSSE();
 
-  // Wire OCR results + MQTT weight/zone state → crate_log creation
   const latestOcr = ocrResults.length > 0 ? ocrResults[0] : null;
   useCrateLogCapture(mqtt, latestOcr);
 
-  // ── OCR pipeline state (auto-start/stop/restart) ──
   const [isWebcamRunning, setIsWebcamRunning] = useState(false);
   const [isPipelineRunning, setIsPipelineRunning] = useState(false);
-  const [webcamFrame, setWebcamFrame] = useState(null);
   const [ipCameraUrl, setIpCameraUrl] = useState('');
   const [useIpCamera, setUseIpCamera] = useState(false);
   const [ocrError, setOcrError] = useState(null);
+  const [crateLogs, setCrateLogs] = useState([]);
 
-  // Image-upload OCR
-  const [uploadedImage, setUploadedImage] = useState(null);
-  const [uploadedImageData, setUploadedImageData] = useState(null);
-  const [ocrResult, setOcrResult] = useState(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [imageOcrError, setImageOcrError] = useState(null);
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const res = await fetch(`${OCR_API_BASE}/api/pipeline/crate-logs`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.logs) setCrateLogs(data.logs);
+        }
+      } catch {}
+    };
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 5000);
+    return () => clearInterval(interval);
+  }, [isPipelineRunning]);
 
   const mountedRef = useRef(true);
-
-  // ── Auto-start webcam + pipeline on mount ──
   useEffect(() => {
     mountedRef.current = true;
-
-    const autoStart = async () => {
-      try {
-        setOcrError(null);
-
-        const wcConfig = useIpCamera
-          ? { ip_camera_url: ipCameraUrl }
-          : { device_index: 0 };
-
-        const wcRes = await fetch(`${OCR_API_BASE}/api/webcam/start`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(wcConfig),
-        });
-        if (!wcRes.ok && wcRes.status !== 400) {
-          throw new Error(`Webcam start failed: ${wcRes.status}`);
-        }
-        if (!mountedRef.current) return;
-        setIsWebcamRunning(true);
-
-        const ppRes = await fetch(`${OCR_API_BASE}/api/pipeline/start`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        });
-        if (!ppRes.ok && ppRes.status !== 400) {
-          throw new Error(`Pipeline start failed: ${ppRes.status}`);
-        }
-        if (!mountedRef.current) return;
-        setIsPipelineRunning(true);
-      } catch (e) {
-        console.error('[LiveGrading] OCR auto-start error:', e);
-        if (mountedRef.current) setOcrError(formatFetchError(e, OCR_API_BASE));
-      }
-    };
-
-    autoStart();
-
     return () => {
       mountedRef.current = false;
-      fetch(`${OCR_API_BASE}/api/pipeline/stop`, { method: 'POST' }).catch(() => {});
-      fetch(`${OCR_API_BASE}/api/webcam/stop`, { method: 'POST' }).catch(() => {});
+      fetch(`${OCR_API_BASE}/api/pipeline/stop`, { method: 'POST', keepalive: true }).catch(() => {});
+      fetch(`${OCR_API_BASE}/api/webcam/stop`, { method: 'POST', keepalive: true }).catch(() => {});
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Sync WebSocket frame
-  useEffect(() => {
-    if (isPipelineRunning && wsWebcamFrame) {
-      setWebcamFrame(wsWebcamFrame.frame_data);
+  const handleStart = useCallback(async () => {
+    try {
+      setOcrError(null);
+      const wcConfig = useIpCamera ? { ip_camera_url: ipCameraUrl } : { device_index: 0 };
+      const wcRes = await fetch(`${OCR_API_BASE}/api/webcam/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wcConfig),
+      });
+      if (!wcRes.ok && wcRes.status !== 400) throw new Error(`Webcam start failed: ${wcRes.status}`);
+      setIsWebcamRunning(true);
+      const ppRes = await fetch(`${OCR_API_BASE}/api/pipeline/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+      });
+      if (!ppRes.ok && ppRes.status !== 400) throw new Error(`Pipeline start failed: ${ppRes.status}`);
+      setIsPipelineRunning(true);
+    } catch (e) {
+      console.error('[LiveGrading] Start error:', e);
+      setOcrError(formatFetchError(e, OCR_API_BASE));
     }
-  }, [isPipelineRunning, wsWebcamFrame]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useIpCamera, ipCameraUrl]);
 
   const handleStop = useCallback(async () => {
-    try { await fetch(`${OCR_API_BASE}/api/pipeline/stop`, { method: 'POST' }); setIsPipelineRunning(false); } catch (e) { console.error(e); }
-    try { await fetch(`${OCR_API_BASE}/api/webcam/stop`, { method: 'POST' }); setIsWebcamRunning(false); setWebcamFrame(null); } catch (e) { console.error(e); }
+    try { await fetch(`${OCR_API_BASE}/api/pipeline/stop`, { method: 'POST' }); setIsPipelineRunning(false); } catch {}
+    try { await fetch(`${OCR_API_BASE}/api/webcam/stop`, { method: 'POST' }); setIsWebcamRunning(false); } catch {}
   }, []);
 
   const handleRestart = useCallback(async () => {
     await fetch(`${OCR_API_BASE}/api/pipeline/stop`, { method: 'POST' }).catch(() => {});
     await fetch(`${OCR_API_BASE}/api/webcam/stop`, { method: 'POST' }).catch(() => {});
-    setIsWebcamRunning(false); setIsPipelineRunning(false); setWebcamFrame(null); setOcrError(null);
+    setIsWebcamRunning(false); setIsPipelineRunning(false); setOcrError(null);
     await new Promise((r) => setTimeout(r, 500));
     try {
       const wcConfig = useIpCamera ? { ip_camera_url: ipCameraUrl } : { device_index: 0 };
@@ -140,221 +134,327 @@ export default function LiveGrading({ mqtt }) {
     } catch (e) { setOcrError(formatFetchError(e, OCR_API_BASE)); }
   }, [useIpCamera, ipCameraUrl]);
 
-  // Image upload OCR
-  const handleImageUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => { setUploadedImage(reader.result); setUploadedImageData(reader.result); setOcrResult(null); setImageOcrError(null); };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const processImageOCR = async () => {
-    if (!uploadedImageData) return;
-    setIsProcessing(true); setImageOcrError(null);
-    try {
-      const response = await fetch(uploadedImageData); const blob = await response.blob();
-      const base64Data = await new Promise((resolve) => { const r = new FileReader(); r.onloadend = () => resolve(r.result.split(',')[1]); r.readAsDataURL(blob); });
-      const ocrResponse = await fetch(`${OCR_API_BASE}/api/ocr/process`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image_data: base64Data }) });
-      if (!ocrResponse.ok) { const et = await ocrResponse.text(); throw new Error(`OCR failed: ${ocrResponse.status} - ${et}`); }
-      setOcrResult(await ocrResponse.json());
-    } catch (err) { setImageOcrError(err.message); }
-    finally { setIsProcessing(false); }
-  };
-
-  // ── Display values ──
+  // ── display values ──────────────────────────────────────────────────
   const isLive = dataValid;
   const isConnected = connectionState === 'connected';
   const scaleOnline = availability === 'online';
   const hasFault = status?.hx711_fault || status?.eth_or_wifi_issue;
+  const zone1Occupied = zone1 === 'occupied';
 
-  const displayWeightKg = useMemo(() => { if (!isLive || weightG == null) return null; return weightG / 1000; }, [isLive, weightG]);
-  const displayGrade = useMemo(() => { if (!isLive || !grade) return null; return crateGradeLabel(grade); }, [isLive, grade]);
+  // Task 2: Mode-aware weight display (reads deviceState.mode from MQTT)
+  const displayMode = deviceState?.mode || 'g';  // 'g' or 'kg'
+  const displayWeight = useMemo(() => {
+    if (!isLive || weightG == null) return null;
+    if (displayMode === 'kg') return { value: trunc3(weightG / 1000), unit: 'kg' };
+    return { value: weightG, unit: 'g' };
+  }, [isLive, weightG, displayMode]);
 
-  const GAUGE_MAX_KG = 30;
-  const gaugePercent = useMemo(() => { if (!isLive || weightG == null) return 0; return Math.min(100, Math.max(0, Math.round((weightG / 1000 / GAUGE_MAX_KG) * 100))); }, [isLive, weightG]);
-  const circumference = 351.8;
-  const dashOffset = circumference - (gaugePercent / 100) * circumference;
+  const displayGrade = useMemo(() => {
+    if (!isLive || !grade) return null;
+    return crateGradeLabel(grade);
+  }, [isLive, grade]);
+
+  // Crate State weight row — same 3-decimal truncation
+  const csWeight = useMemo(() => {
+    if (crateState?.weight_g == null) return null;
+    if (displayMode === 'kg') return `${trunc3(crateState.weight_g / 1000)} kg`;
+    return `${crateState.weight_g} g`;
+  }, [crateState?.weight_g, displayMode]);
+
+  const yoloBoxDetected = yoloDetections?.box_present ?? false;
+  const yoloHandsDetected = yoloDetections?.hands_present ?? false;
+  const yoloPrimaryBox = yoloDetections?.primary_box ?? null;
+  const pipelineActive = isWebcamRunning || isPipelineRunning;
 
   return (
-    <div className="grid grid-cols-12 gap-lg">
-      {/* ── LEFT COLUMN ── */}
-      <div className="col-span-12 lg:col-span-7 flex flex-col gap-lg">
-        {/* Weight KPI */}
-        <section className="bg-surface-container border border-outline-variant rounded p-xl flex flex-col items-center justify-center text-center">
-          <span className="font-label-caps text-label-caps text-on-surface-variant mb-md">CURRENT CRATE WEIGHT</span>
-          {displayWeightKg != null ? (
-            <div className="flex items-baseline gap-sm">
-              <h2 className="font-headline-lg text-[80px] leading-tight tabular-nums font-bold text-primary">{displayWeightKg.toFixed(2)}</h2>
-              <span className="font-headline-md text-on-surface-variant">kg</span>
-            </div>
-          ) : (
-            <h2 className="font-headline-lg text-[80px] leading-tight tabular-nums font-bold text-on-surface-variant/30">--.--</h2>
-          )}
-          <div className="mt-sm flex flex-wrap items-center justify-center gap-xs">
-            {!isConnected && <StatusPill variant="offline" label="MQTT DISCONNECTED" />}
-            {isConnected && !scaleOnline && <StatusPill variant="offline" label="SCALE OFFLINE" />}
-            {isConnected && scaleOnline && hasFault && <StatusPill variant="flagged" label="SENSOR FAULT — DATA INVALID" />}
-            {isConnected && scaleOnline && !hasFault && !isLive && <StatusPill variant="pending" label="WAITING FOR DATA" />}
-            {isLive && <StatusPill variant="online" label="LIVE" />}
-          </div>
-          <div className="mt-xl flex items-center gap-lg">
-            <div className="px-lg py-sm bg-primary/10 border border-primary/30 rounded-full inline-flex items-center gap-md">
-              <span className={`w-3 h-3 rounded-full ${isLive ? 'bg-primary animate-pulse' : 'bg-on-surface-variant'}`} />
-              <span className="font-label-caps text-label-caps text-primary tracking-widest">{displayGrade || '--'}</span>
-              {isLive && <span className="font-label-caps text-[10px] text-[#10B981]">LIVE</span>}
-            </div>
-            {latestOcr?.text && (
-              <div className="px-lg py-sm bg-tertiary/10 border border-tertiary/30 rounded-full inline-flex items-center gap-md">
-                <span className="material-symbols-outlined text-sm text-tertiary">qr_code_scanner</span>
-                <span className="font-data-mono text-data-mono text-tertiary">{latestOcr.text}</span>
-                {latestOcr.confidence != null && <span className="font-label-caps text-[10px] text-tertiary/70">{(latestOcr.confidence * 100).toFixed(0)}%</span>}
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Gauge + Image OCR row */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-lg">
-          {/* Gauge */}
-          <div className="bg-surface-container border border-outline-variant rounded p-lg flex items-center gap-xl">
-            <div className="relative w-32 h-32 flex-shrink-0">
-              <svg className="w-full h-full transform -rotate-90">
-                <circle cx="64" cy="64" fill="transparent" r="56" stroke="currentColor" strokeWidth="8" className="text-surface-container-highest" />
-                <circle cx="64" cy="64" fill="transparent" r="56" stroke="currentColor" strokeWidth="8" strokeDasharray={circumference} strokeDashoffset={dashOffset} className="text-primary transition-[stroke-dashoffset] duration-500 ease-out" style={{ stroke: isLive ? '#06b6d4' : '#3d494c' }} />
-              </svg>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="font-data-mono text-data-mono text-on-surface tabular-nums">{isLive ? `${gaugePercent}%` : '--'}</span>
-              </div>
-            </div>
-            <div className="flex-1">
-              <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-sm">CRATE WEIGHT RANGE</h3>
-              <div className="flex justify-between text-xs font-data-mono mb-xs"><span>0 kg</span><span className="text-primary">Target</span><span>{GAUGE_MAX_KG} kg</span></div>
-              <div className="h-1 bg-surface-container-highest rounded-full overflow-hidden"><div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${isLive ? gaugePercent : 0}%` }} /></div>
-              <p className="font-body-md text-body-md text-on-surface mt-md leading-snug">{isLive ? 'Current crate reading is within the Crate Weight Window for Line B.' : 'Awaiting live scale data from broker.'}</p>
-            </div>
-          </div>
-
-          {/* Image to Text OCR */}
-          <div className="bg-surface-container border border-outline-variant rounded p-lg flex flex-col">
-            <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-sm">IMAGE TO TEXT OCR</h3>
-            <input type="file" accept="image/*" onChange={handleImageUpload}
-              className="w-full text-xs text-on-surface-variant file:mr-2 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-on-primary hover:file:bg-primary-container mb-sm" />
-            {uploadedImage && (
-              <div className="flex-1 flex flex-col">
-                <img src={uploadedImage} alt="Uploaded" className="w-full h-32 object-cover rounded border border-outline-variant mb-sm" />
-                <button onClick={processImageOCR} disabled={isProcessing}
-                  className="w-full bg-primary text-on-primary py-xs rounded font-label-caps text-label-caps hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-                  {isProcessing ? 'PROCESSING...' : 'PROCESS OCR'}
-                </button>
-              </div>
-            )}
-            {imageOcrError && <p className="text-[#EF4444] font-body-md text-xs mt-xs">{imageOcrError}</p>}
-            {ocrResult && (
-              <div className="mt-sm bg-surface-container-low p-sm rounded space-y-xs">
-                <div className="flex justify-between"><span className="font-label-caps text-[10px] text-on-surface-variant">TEXT</span><span className="font-data-mono text-xs text-primary">{ocrResult.confidence ? `${(ocrResult.confidence * 100).toFixed(1)}%` : '--'}</span></div>
-                <p className="font-body-md text-body-md text-on-surface">{ocrResult.text || 'No text detected'}</p>
-                {ocrResult.is_duplicate && <p className="font-label-caps text-[10px] text-tertiary">⚠ Duplicate ({(ocrResult.similarity_score * 100).toFixed(0)}% similar)</p>}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* ── RIGHT COLUMN ── */}
-      <div className="col-span-12 lg:col-span-5 flex flex-col gap-lg">
-        {/* HMI Controls */}
-        <HMIPanel deviceState={deviceState} publishDeviceCommand={publishDeviceCommand} isLive={isConnected} />
-
-        {/* Camera Feed */}
-        <div className="bg-surface-container border border-outline-variant rounded p-lg">
-          <div className="flex items-center justify-between mb-md">
-            <h3 className="font-label-caps text-label-caps text-on-surface-variant">CAMERA FEED</h3>
+    <div className="flex flex-col gap-lg">
+      {/* ══════════════════════════════════════════════════════════════
+          ROW 1: Camera Feed (8 cols) | Right column (4 cols)
+          ══════════════════════════════════════════════════════════════ */}
+      <div className="grid grid-cols-12 gap-lg">
+        {/* ── Camera Feed ── */}
+        <div className="col-span-12 lg:col-span-8 bg-surface-container border border-outline-variant rounded pt-md px-md pb-sm">
+          <div className="flex items-center justify-between mb-sm">
+            <h3 className={cardTitle}>CAMERA FEED</h3>
             <div className="flex items-center gap-sm">
               <StatusPill variant={ocrConnState === 'connected' ? 'online' : 'offline'} label={ocrConnState === 'connected' ? 'LIVE' : 'OFFLINE'} />
-              {(isWebcamRunning || isPipelineRunning) && (
+              {pipelineActive ? (
                 <>
-                  <button onClick={handleStop} className="bg-error text-on-error py-xs px-sm rounded font-label-caps text-[10px] hover:bg-error-container transition-colors">Stop</button>
-                  <button onClick={handleRestart} className="bg-primary text-on-primary py-xs px-sm rounded font-label-caps text-[10px] hover:brightness-110 transition-colors">Restart</button>
+                  <button onClick={handleStop} className="bg-error text-on-error py-xs px-md rounded font-label-caps text-[10px] hover:bg-error-container transition-colors">Stop</button>
+                  <button onClick={handleRestart} className="bg-primary text-on-primary py-xs px-md rounded font-label-caps text-[10px] hover:brightness-110 transition-colors">Restart</button>
                 </>
+              ) : (
+                <button onClick={handleStart} className="bg-[#10B981] text-white py-xs px-md rounded font-label-caps text-[10px] hover:brightness-110 transition-colors">Start</button>
               )}
             </div>
           </div>
 
-          {/* Error banner */}
           {(ocrError || connectionError) && (
-            <div className="bg-error-container p-sm rounded mb-sm"><p className="text-on-error-container font-body-md text-xs whitespace-pre-wrap">{ocrError || connectionError}</p></div>
+            <div className="bg-error-container p-sm rounded mb-sm">
+              <p className="text-on-error-container font-body-md text-xs whitespace-pre-wrap">{ocrError || connectionError}</p>
+            </div>
           )}
 
-          {/* IP Camera toggle */}
-          <div className="mb-sm p-sm bg-surface-container-low rounded">
-            <div className="flex items-center gap-sm mb-xs">
-              <input type="checkbox" id="ipCamToggle" checked={useIpCamera} onChange={(e) => setUseIpCamera(e.target.checked)} className="w-4 h-4" />
-              <label htmlFor="ipCamToggle" className="font-body-md text-xs text-on-surface">Use IP Camera (Phone)</label>
+          {!pipelineActive && (
+            <div className="mb-sm p-sm bg-surface-container-low rounded">
+              <div className="flex items-center gap-sm mb-xs">
+                <input type="checkbox" id="ipCamToggle" checked={useIpCamera} onChange={(e) => setUseIpCamera(e.target.checked)} className="w-4 h-4" />
+                <label htmlFor="ipCamToggle" className="font-body-md text-xs text-on-surface">Use IP Camera (Phone)</label>
+              </div>
+              {useIpCamera && (
+                <input type="text" placeholder="http://192.168.1.x:port/video" value={ipCameraUrl} onChange={(e) => setIpCameraUrl(e.target.value)}
+                  className="w-full px-sm py-xs rounded border border-outline-variant bg-surface-container text-on-surface font-body-md text-xs mb-xs" />
+              )}
+              <p className="font-body-md text-[10px] text-on-surface-variant">Install IP Webcam app on your phone and enter the URL above</p>
             </div>
-            {useIpCamera && <input type="text" placeholder="http://192.168.1.x:port/video" value={ipCameraUrl} onChange={(e) => setIpCameraUrl(e.target.value)} className="w-full px-sm py-xs rounded border border-outline-variant bg-surface-container text-on-surface font-body-md text-xs mb-xs" />}
-            <p className="font-body-md text-[10px] text-on-surface-variant">Install IP Webcam app on your phone and enter the URL above</p>
-          </div>
+          )}
 
-          {/* Webcam display */}
-          {isWebcamRunning && !isPipelineRunning ? (
-            <div className="aspect-video bg-surface-container-low rounded flex items-center justify-center overflow-hidden">
-              <img src={`${OCR_API_BASE}/api/webcam/stream`} alt="MJPEG stream" className="w-full h-full object-cover" />
+          {isWebcamRunning ? (
+            <div className="relative bg-surface-container-low rounded overflow-hidden leading-[0]">
+              <img src={`${OCR_API_BASE}/api/webcam/stream`} alt="MJPEG stream" className="w-full block" />
+              <YoloOverlay detections={yoloDetections} />
             </div>
           ) : (
-            <WebcamFeed frameData={webcamFrame} isRunning={isWebcamRunning || isPipelineRunning} />
+            <WebcamFeed frameData={null} isRunning={false} connectionState={ocrConnState} />
           )}
 
-          {/* Pipeline stats */}
           {pipelineStatus && (
-            <div className="mt-sm grid grid-cols-3 gap-xs">
-              <div className="bg-surface-container-low p-sm rounded text-center"><span className="font-label-caps text-[10px] text-on-surface-variant block">FPS</span><span className="font-data-mono text-data-mono text-primary">{pipelineStatus.fps?.toFixed(1) || '--'}</span></div>
-              <div className="bg-surface-container-low p-sm rounded text-center"><span className="font-label-caps text-[10px] text-on-surface-variant block">OCR</span><span className="font-data-mono text-data-mono text-on-surface">{pipelineStatus.ocr_count ?? '--'}</span></div>
-              <div className="bg-surface-container-low p-sm rounded text-center"><span className="font-label-caps text-[10px] text-on-surface-variant block">MS</span><span className="font-data-mono text-data-mono text-on-surface">{pipelineStatus.processing_time_ms?.toFixed(0) || '--'}</span></div>
+            <div className="mt-sm grid grid-cols-4 gap-xs">
+              <StatTile label="FPS" value={pipelineStatus.fps?.toFixed(1) || '--'} accent />
+              <StatTile label="OCR" value={pipelineStatus.ocr_count ?? '--'} />
+              <StatTile label="MS" value={pipelineStatus.processing_time_ms?.toFixed(0) || '--'} />
+              <StatTile label="YOLO" value={pipelineStatus.yolo_inference_ms?.toFixed(0) || '--'} tertiary />
             </div>
           )}
         </div>
 
-        {/* Pipeline Status */}
-        <div className="bg-surface-container border border-outline-variant rounded p-lg">
-          <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-md">PIPELINE STATUS</h3>
-          <PipelineStatus status={pipelineStatus} />
-        </div>
-
-        {/* Recent OCR */}
-        <div className="bg-surface-container border border-outline-variant rounded p-lg">
-          <div className="flex justify-between items-center mb-md">
-            <h3 className="font-label-caps text-label-caps text-on-surface-variant">RECENT OCR</h3>
-            <span className="font-data-mono text-[10px] text-on-surface-variant">{ocrResults.length} results</span>
-          </div>
-          {ocrResults.length === 0 ? (
-            <p className="font-body-md text-body-md text-on-surface-variant text-center py-md">Waiting for OCR results...</p>
-          ) : (
-            <div className="space-y-xs max-h-48 overflow-y-auto scrollbar-industrial">
-              {ocrResults.slice(0, 8).map((r, i) => (
-                <div key={i} className={`bg-surface-container-low p-sm rounded border ${r.is_duplicate ? 'border-tertiary' : 'border-outline-variant'}`}>
-                  <div className="flex items-center justify-between">
-                    <span className="font-data-mono text-xs text-on-surface truncate flex-1 mr-sm">{r.text || '(no text)'}</span>
-                    <span className="font-data-mono text-xs text-primary flex-shrink-0">{r.confidence != null ? `${(r.confidence * 100).toFixed(0)}%` : '--'}</span>
-                  </div>
-                  {r.is_duplicate && <span className="font-label-caps text-[10px] text-tertiary">Duplicate</span>}
+        {/* ── Right column ── */}
+        <div className="col-span-12 lg:col-span-4 flex flex-col gap-lg">
+          {/* Recent OCR + Crate Log side by side */}
+          <div className="grid grid-cols-2 gap-lg">
+            <div className={card}>
+              <div className="flex justify-between items-center mb-md">
+                <h3 className={cardTitle}>RECENT OCR</h3>
+                <span className="font-data-mono text-[10px] text-on-surface-variant">{ocrResults.length}</span>
+              </div>
+              {ocrResults.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-md text-on-surface-variant/30">
+                  <span className="material-symbols-outlined text-2xl mb-sm">text_fields</span>
+                  <span className="font-label-caps text-[9px]">Waiting for results...</span>
                 </div>
-              ))}
+              ) : (
+                <div className="space-y-xs max-h-48 overflow-y-auto scrollbar-industrial">
+                  {ocrResults.slice(0, 8).map((r, i) => (
+                    <div key={i} className={`bg-surface-container-low p-sm rounded border ${r.is_duplicate ? 'border-tertiary/30' : 'border-outline-variant'}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-data-mono text-xs text-on-surface truncate flex-1 mr-sm">{r.text || '(no text)'}</span>
+                        <span className="font-data-mono text-[11px] text-primary flex-shrink-0">{r.confidence != null ? `${(r.confidence * 100).toFixed(0)}%` : '--'}</span>
+                      </div>
+                      {r.is_duplicate && <span className="font-label-caps text-[9px] text-tertiary">Dup</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        {/* Crate Log */}
-        <div className="bg-surface-container border border-outline-variant rounded p-lg">
-          <h3 className="font-label-caps text-label-caps text-on-surface-variant mb-lg">CRATE LOG (LINE B)</h3>
-          <div className="flex flex-col items-center justify-center py-lg text-center">
-            <span className="material-symbols-outlined text-4xl text-on-surface-variant/30 mb-sm">inventory_2</span>
-            <p className="font-body-md text-body-md text-on-surface-variant">{isConnected ? 'Crate log entries will appear here as crates are processed.' : 'Connect to the MQTT broker to begin logging crates.'}</p>
-            <p className="font-data-mono text-xs text-on-surface-variant/50 mt-xs">Logs saved to PostgreSQL via Express API</p>
+            <div className={`${card} flex flex-col`}>
+              <h3 className={`${cardTitle} mb-md`}>CRATE LOG</h3>
+              {crateLogs.length === 0 ? (
+                <div className="flex flex-col items-center justify-center flex-1 text-on-surface-variant/30 py-md">
+                  <span className="material-symbols-outlined text-2xl mb-sm">inventory_2</span>
+                  <span className="font-label-caps text-[9px]">No logs yet</span>
+                </div>
+              ) : (
+                <div className="space-y-xs max-h-48 overflow-y-auto scrollbar-industrial">
+                  {crateLogs.map((log, i) => (
+                    <div key={i} className="bg-surface-container-low p-sm rounded border border-outline-variant">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-data-mono text-xs text-primary font-bold">{log.batch_id || '--'}</span>
+                        <span className="font-data-mono text-[10px] text-on-surface-variant/50">
+                          {log.timestamp ? new Date(log.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : ''}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-body-md text-[11px] text-on-surface-variant">
+                          {trunc3(log.weight_g / 1000)} kg · {log.grade}
+                        </span>
+                        <TriggerChip trigger={log.capture_trigger} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Current Crate Weight */}
+          <section className={`${card} flex flex-col items-center justify-center text-center`}>
+            <span className={`${cardTitle} mb-md`}>CURRENT CRATE WEIGHT</span>
+            {displayWeight != null ? (
+              <div className="flex items-baseline gap-xs">
+                <h2 className="font-headline-lg text-[64px] leading-tight tabular-nums font-bold text-primary">
+                  {displayWeight.unit === 'kg' ? displayWeight.value.toFixed(3) : displayWeight.value}
+                </h2>
+                <span className="font-headline-md text-on-surface-variant">{displayWeight.unit}</span>
+              </div>
+            ) : (
+              <h2 className="font-headline-lg text-[64px] leading-tight tabular-nums font-bold text-on-surface-variant/20">--.---</h2>
+            )}
+            <div className="mt-md">
+              <span className={`inline-flex items-center gap-sm px-lg py-sm rounded-full border text-label-caps font-label-caps ${
+                isLive ? 'bg-primary/10 border-primary/30 text-primary' : 'bg-surface-container-low border-outline-variant text-on-surface-variant/50'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${isLive ? 'bg-primary animate-pulse' : 'bg-on-surface-variant/30'}`} />
+                {displayGrade || '--'}
+              </span>
+            </div>
+            <div className="mt-md flex flex-wrap items-center justify-center gap-xs">
+              {connectionPill(isConnected)}
+              {scalePill(scaleOnline, hasFault, isLive)}
+              <StatusPill variant={ocrConnState === 'connected' ? 'online' : 'offline'} label={ocrConnState === 'connected' ? 'OCR LIVE' : 'OCR OFFLINE'} />
+            </div>
+            {latestOcr?.text && (
+              <div className="mt-sm text-[10px] text-tertiary font-data-mono truncate max-w-full px-sm">
+                OCR: {latestOcr.text} {latestOcr.confidence != null ? `${(latestOcr.confidence * 100).toFixed(0)}%` : ''}
+              </div>
+            )}
+          </section>
+
+          {/* Detection Zones */}
+          <div className={card}>
+            <h3 className={`${cardTitle} mb-md`}>DETECTION ZONES</h3>
+            <div className="space-y-sm">
+              <div className="flex items-center justify-between bg-surface-container-low p-sm rounded">
+                <span className="font-label-caps text-[10px] text-on-surface-variant">ZONE 2 (CRATE)</span>
+                <StatusPill variant={zone2 === 'occupied' ? 'armed' : zone2 === 'clear' ? 'online' : 'pending'} label={zone2 === 'occupied' ? 'ARMED' : zone2 === 'clear' ? 'CLEAR' : 'NO DATA'} />
+              </div>
+              {yoloDetections ? (
+                <>
+                  <div className="flex items-center justify-between bg-surface-container-low p-sm rounded">
+                    <span className="font-label-caps text-[10px] text-primary">YOLO: CRATE</span>
+                    <StatusPill variant={yoloBoxDetected ? 'armed' : 'pending'} label={yoloBoxDetected ? `DETECTED ${yoloPrimaryBox?.confidence ? (yoloPrimaryBox.confidence * 100).toFixed(0) + '%' : ''}` : 'NONE'} />
+                  </div>
+                  <div className="flex items-center justify-between bg-surface-container-low p-sm rounded">
+                    <span className="font-label-caps text-[10px] text-[#EF4444]">YOLO: HANDS</span>
+                    <StatusPill variant={yoloHandsDetected ? 'occupied' : 'online'} label={yoloHandsDetected ? 'DETECTED' : 'CLEAR'} />
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-md text-on-surface-variant/30">
+                  <span className="material-symbols-outlined text-2xl mb-xs">psychology</span>
+                  <span className="font-label-caps text-[10px]">YOLO not active</span>
+                </div>
+              )}
+              {captureArmed && !zone1Occupied && (
+                <div className="bg-primary/10 border border-primary/30 rounded p-sm text-center">
+                  <span className="font-label-caps text-[10px] text-primary">CAPTURE ARMED</span>
+                </div>
+              )}
+              {latestOcr?.hands_suppressed && (
+                <div className="bg-[#EF4444]/10 border border-[#EF4444]/30 rounded p-sm text-center">
+                  <span className="font-label-caps text-[10px] text-[#EF4444]">OCR SUPPRESSED</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Crate Log State — always visible */}
+          <div className={`${card} ${
+            crateState?.state === 'READY' ? 'border-[#F59E0B]/50 bg-[#F59E0B]/5' :
+            crateState?.state === 'LOGGED' ? 'border-[#10B981]/50 bg-[#10B981]/5' : ''
+          }`}>
+            <div className="flex items-center justify-between mb-md">
+              <h3 className={cardTitle}>CRATE LOG STATE</h3>
+              <StatusPill
+                variant={!crateState ? 'offline' : crateState.state === 'READY' ? 'armed' : crateState.state === 'LOGGED' ? 'online' : crateState.state === 'AWAITING_DATA' ? 'pending' : 'offline'}
+                label={crateState ? crateState.state : 'NO DATA'}
+              />
+            </div>
+            {crateState ? (
+              <>
+                <div className="space-y-1">
+                  <StateRow label="Batch ID" value={crateState.batch_id || '--'} active={!!crateState.batch_id} />
+                  <StateRow label="Weight" value={csWeight || '--'} active={crateState.weight_g != null} />
+                  <StateRow label="Grade" value={crateState.grade || '--'} />
+                  <StateRow label="Hands" value={crateState.hands_present ? 'DETECTED' : 'CLEAR'} active={!crateState.hands_present} danger={crateState.hands_present} />
+                  {crateState.countdown_seconds > 0 && (
+                    <StateRow label="Auto-log in" value={`${crateState.countdown_seconds.toFixed(1)}s`} active />
+                  )}
+                  <StateRow label="Logs Committed" value={crateState.log_count ?? 0} active />
+                </div>
+                {crateState.state === 'READY' && crateState.hands_present && (
+                  <div className="mt-md bg-[#EF4444]/10 border border-[#EF4444]/30 rounded p-sm text-center">
+                    <span className="font-label-caps text-[11px] text-[#EF4444]">CLEAR HANDS FROM CAMERA TO AUTO-LOG</span>
+                  </div>
+                )}
+                {crateState.state === 'READY' && !crateState.hands_present && crateState.countdown_seconds > 0 && (
+                  <div className="mt-md bg-[#10B981]/10 border border-[#10B981]/30 rounded p-sm text-center animate-pulse">
+                    <span className="font-label-caps text-[11px] text-[#10B981]">AUTO-LOGGING IN {crateState.countdown_seconds.toFixed(1)}s</span>
+                  </div>
+                )}
+                {crateState.state === 'LOGGED' && crateState.cooldown_remaining_ms > 0 && (
+                  <div className="mt-md bg-[#10B981]/10 border border-[#10B981]/30 rounded p-sm text-center">
+                    <span className="font-label-caps text-[11px] text-[#10B981]">LOGGED · COOLDOWN {(crateState.cooldown_remaining_ms / 1000).toFixed(1)}s</span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-md text-on-surface-variant/30">
+                <span className="material-symbols-outlined text-2xl mb-sm">hourglass_top</span>
+                <span className="font-label-caps text-[10px]">Start pipeline to begin</span>
+              </div>
+            )}
           </div>
         </div>
       </div>
+
+      {/* ══════════════════════════════════════════════════════════════
+          ROW 2: Device Controls (8 cols, under Camera Feed)
+          ══════════════════════════════════════════════════════════════ */}
+      <div className="grid grid-cols-12 gap-lg">
+        <div className="col-span-12 lg:col-span-8">
+          <HMIPanel deviceState={deviceState} publishDeviceCommand={publishDeviceCommand} publishLogTrigger={publishLogTrigger} isLive={isConnected} crateState={crateState} />
+        </div>
+      </div>
+
     </div>
+  );
+}
+
+// ── sub-components ─────────────────────────────────────────────────────
+
+function StateRow({ label, value, active, danger }) {
+  return (
+    <div className="flex justify-between text-xs py-0.5">
+      <span className="text-on-surface-variant">{label}</span>
+      <span className={`font-data-mono ${danger ? 'text-[#EF4444]' : active ? 'text-primary' : 'text-on-surface-variant/50'}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function StatTile({ label, value, accent, tertiary }) {
+  return (
+    <div className="bg-surface-container-low p-sm rounded text-center">
+      <span className="font-label-caps text-[10px] text-on-surface-variant block">{label}</span>
+      <span className={`font-data-mono text-data-mono ${accent ? 'text-primary' : tertiary ? 'text-tertiary' : 'text-on-surface'}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function TriggerChip({ trigger }) {
+  const map = {
+    auto_countdown: { icon: '⏱', label: 'AUTO', cls: 'text-[#10B981] bg-[#10B981]/10 border-[#10B981]/20' },
+    manual_button:  { icon: '👆', label: 'MANUAL', cls: 'text-primary bg-primary/10 border-primary/20' },
+    hand_wave:      { icon: '👋', label: 'WAVE', cls: 'text-tertiary bg-tertiary/10 border-tertiary/20' },
+  };
+  const t = map[trigger] || { icon: '', label: trigger || 'UNKNOWN', cls: 'text-on-surface-variant bg-surface-container-high border-outline-variant' };
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-px rounded text-[9px] font-label-caps border ${t.cls}`}>
+      {t.icon} {t.label}
+    </span>
   );
 }

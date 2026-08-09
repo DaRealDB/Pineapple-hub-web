@@ -2,6 +2,10 @@ import { useEffect, useRef } from 'react';
 import useApi from './useApi';
 
 /**
+ * FALLBACK ONLY — The primary crate logging is now handled by the
+ * backend CrateStateMachine (Python) which runs YOLO+OCR+MQTT+trigger-line
+ * entirely server-side. This hook remains as a safety net.
+ *
  * CAPTURE WINDOW (ms): how long after the last OCR result we consider weight
  * and zone data to be part of the "same" crate placement event.
  * Documented in forge.md — adjust based on real pipeline latency.

@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     WEBSOCKET_PORT: int = 8000
     WEBSOCKET_HOST: str = "127.0.0.1"  # More secure default
     
+    # YOLO Object Detection Configuration
+    YOLO_WEIGHTS_PATH: str = "weights/best.pt"
+    YOLO_CONFIDENCE_THRESHOLD: float = 0.35
+    YOLO_IMAGE_SIZE: int = 640
+    YOLO_ENABLED: str = "true"
+
     # Live View (decoupled from OCR)
     LIVE_VIEW_FPS: int = 15
     OCR_RESIZE_WIDTH: int = 320
@@ -46,6 +52,21 @@ class Settings(BaseSettings):
     ENABLE_PERFORMANCE_LOGGING: bool = True
     LOG_INTERVAL_SECONDS: float = 10.0
     
+    # Crate State Machine Configuration
+    CRATE_STATE_MACHINE_ENABLED: bool = True
+    CRATE_LOG_COOLDOWN_MS: int = 3000
+    CRATE_DATA_TTL_MS: int = 10000
+    CRATE_AUTO_LOG_DELAY_SECONDS: int = 5
+    EXPRESS_API_URL: str = "http://localhost:3001"
+    EXPRESS_API_TOKEN: str = ""
+
+    # MQTT (Python client for scale weight data)
+    MQTT_BROKER_URL: str = "mqtt://localhost:1883"
+    MQTT_CLIENT_ID: str = "python-ocr-backend"
+
+    # Pipeline Idle Auto-Stop (0 = never)
+    PIPELINE_IDLE_STOP_SECONDS: int = 0
+
     # Session Configuration
     SESSION_ID: Optional[str] = "5fe93ffb-6559-44a2-9d07-682107e3975b"
     
@@ -163,6 +184,58 @@ class Settings(BaseSettings):
             raise ValueError('Log interval must be positive')
         if v > 3600:
             raise ValueError('Log interval cannot exceed 1 hour')
+        return v
+
+    @validator('YOLO_WEIGHTS_PATH')
+    def validate_yolo_weights_path(cls, v):
+        if not v:
+            raise ValueError('YOLO weights path must not be empty')
+        return v
+
+    @validator('YOLO_CONFIDENCE_THRESHOLD')
+    def validate_yolo_confidence(cls, v):
+        if not 0 <= v <= 1:
+            raise ValueError('YOLO confidence threshold must be between 0 and 1')
+        return v
+
+    @validator('YOLO_IMAGE_SIZE')
+    def validate_yolo_image_size(cls, v):
+        if v not in (320, 480, 640, 800, 960, 1280):
+            raise ValueError(f'YOLO image size must be a valid YOLOv8 size (320-1280, multiples of 32)')
+        return v
+
+    @validator('YOLO_ENABLED')
+    def validate_yolo_enabled(cls, v):
+        if v.lower() not in ('true', 'false', 'auto'):
+            raise ValueError('YOLO_ENABLED must be true, false, or auto')
+        return v.lower()
+
+    @validator('CRATE_LOG_COOLDOWN_MS')
+    def validate_crate_cooldown(cls, v):
+        if v < 0:
+            raise ValueError('Crate log cooldown must be non-negative')
+        if v > 60000:
+            raise ValueError('Crate log cooldown cannot exceed 60 seconds')
+        return v
+
+    @validator('CRATE_DATA_TTL_MS')
+    def validate_crate_ttl(cls, v):
+        if v < 1000:
+            raise ValueError('Crate data TTL must be at least 1000ms')
+        if v > 60000:
+            raise ValueError('Crate data TTL cannot exceed 60 seconds')
+        return v
+
+    @validator('CRATE_AUTO_LOG_DELAY_SECONDS')
+    def validate_auto_log_delay(cls, v):
+        if not 1 <= v <= 30:
+            raise ValueError('Auto-log delay must be between 1 and 30 seconds')
+        return v
+
+    @validator('PIPELINE_IDLE_STOP_SECONDS')
+    def validate_idle_stop(cls, v):
+        if v < 0:
+            raise ValueError('Pipeline idle stop seconds must be non-negative')
         return v
     
     class Config:

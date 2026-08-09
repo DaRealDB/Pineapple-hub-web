@@ -81,11 +81,16 @@ class FrameResponse(BaseModel):
 # Global webcam capture object
 webcam_capture = None
 ip_camera_url = None
+_webcam_stopped = False  # Once True, get_webcam_capture() refuses to re-open
 
 
 def get_webcam_capture(camera_url: Optional[str] = None):
     """Get or create webcam capture object with low-latency settings."""
-    global webcam_capture, ip_camera_url
+    global webcam_capture, ip_camera_url, _webcam_stopped
+
+    # Respect the stopped flag — prevent re-opening after explicit stop
+    if _webcam_stopped:
+        return None
 
     # If IP camera URL is provided, use it
     if camera_url:
@@ -144,12 +149,47 @@ def get_webcam_capture(camera_url: Optional[str] = None):
     return webcam_capture
 
 
+def release_webcam_hardware():
+    """
+    Force-release the physical webcam hardware. Idempotent, safe to call
+    from any thread at any time — pipeline shutdown, API stop, or cleanup.
+
+    Sets the _webcam_stopped flag so no consumer can re-open the device.
+    """
+    global webcam_capture, ip_camera_url, _webcam_stopped
+    _webcam_stopped = True
+
+    if webcam_capture is None:
+        return
+
+    logger.info("Releasing webcam hardware ...")
+    for i in range(5):
+        try:
+            webcam_capture.release()
+            logger.debug(f"Release attempt {i + 1} OK")
+        except Exception:
+            pass
+
+    del webcam_capture
+    webcam_capture = None
+    ip_camera_url = None
+
+    import gc
+    for _ in range(3):
+        gc.collect()
+
+    logger.info("Webcam hardware released")
+
+
 @router.post("/start", response_model=dict)
 async def start_webcam(config: Optional[WebcamConfig] = None):
     """Start webcam capture"""
     try:
-        global webcam_capture
-        
+        global webcam_capture, _webcam_stopped
+
+        # Clear the stopped flag so get_webcam_capture() can open the device
+        _webcam_stopped = False
+
         # Update settings if config provided
         if config:
             settings.WEBCAM_DEVICE_INDEX = config.device_index
@@ -181,52 +221,64 @@ async def start_webcam(config: Optional[WebcamConfig] = None):
 
 @router.post("/stop", response_model=dict)
 async def stop_webcam():
-    """Stop webcam capture"""
+    """Stop webcam capture — non-blocking, releases hardware via executor thread."""
     try:
-        global webcam_capture, ip_camera_url
-        
-        if webcam_capture:
-            logger.info("Releasing webcam hardware...")
-            
-            # Set all properties to default before release
-            try:
-                webcam_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                webcam_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                webcam_capture.set(cv2.CAP_PROP_FPS, 30)
-            except:
-                pass
-            
-            # Try multiple release methods
-            for i in range(5):
-                try:
-                    webcam_capture.release()
-                    logger.info(f"Release attempt {i+1} completed")
-                except:
-                    pass
-            
-            # Delete the object entirely
-            del webcam_capture
-            webcam_capture = None
-            ip_camera_url = None
-            
-            # Force garbage collection multiple times
-            import gc
-            for _ in range(5):
-                gc.collect()
-            
-            # Additional delay to ensure hardware release
-            import time
-            time.sleep(2.0)
-        
+        import asyncio
+
+        # Run the blocking release in a thread to keep the event loop free
+        await asyncio.to_thread(_stop_webcam_sync)
         logger.info("Webcam stopped and hardware released")
-        
+
         return APIResponse.success(message="Webcam stopped successfully")
     except Exception as e:
         logger.error(f"Error stopping webcam: {e}")
         # Force cleanup even on error
+        global webcam_capture, ip_camera_url
         webcam_capture = None
         ip_camera_url = None
         return APIResponse.success(message="Webcam stopped (force cleanup)")
+
+
+def _stop_webcam_sync():
+    """Synchronous webcam release — safe to block (runs in executor thread)."""
+    global webcam_capture, ip_camera_url, _webcam_stopped
+
+    if webcam_capture is None:
+        _webcam_stopped = True
+        return
+
+    logger.info("Releasing webcam hardware ...")
+
+    # Set properties to default before release
+    try:
+        webcam_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        webcam_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        webcam_capture.set(cv2.CAP_PROP_FPS, 30)
+    except Exception:
+        pass
+
+    # Release with retries
+    for i in range(5):
+        try:
+            webcam_capture.release()
+            logger.debug(f"Release attempt {i + 1} OK")
+        except Exception:
+            pass
+
+    del webcam_capture
+    webcam_capture = None
+    ip_camera_url = None
+    _webcam_stopped = True
+
+    import gc
+    for _ in range(3):
+        gc.collect()
+
+    # Brief sleep in executor thread (NOT the event loop)
+    import time
+    time.sleep(0.5)
+
+    logger.info("Webcam hardware released")
 
 
 @router.get("/frame", response_model=FrameResponse)
@@ -277,41 +329,60 @@ async def get_webcam_status():
         handle_api_error(e, "get_webcam_status")
 
 
+# ── Shared frame buffer for MJPEG stream ──────────────────────────
+# The pipeline capture thread writes frames here; the MJPEG generator
+# reads from here instead of competing for the camera directly.
+_shared_frame = None
+_shared_frame_lock = threading.Lock()
+
+
+def update_shared_frame(jpeg_bytes: bytes) -> None:
+    """Called by pipeline capture thread to push latest JPEG frame."""
+    global _shared_frame
+    with _shared_frame_lock:
+        _shared_frame = jpeg_bytes
+
+
 @router.get("/stream")
 def stream_mjpeg():
     """
-    MJPEG streaming endpoint for low-latency live preview.
+    MJPEG streaming endpoint — reads pre-encoded JPEG frames from the
+    pipeline's shared buffer (zero camera contention, zero re-encode).
 
     Use as: <img src="http://localhost:8000/api/webcam/stream" />
-    Eliminates the HTTP-polling round-trip latency of /api/webcam/frame.
     """
     def generate_frames():
         while True:
             try:
-                capture = get_webcam_capture()
-                if not capture or not capture.isOpened():
+                # Read from shared buffer (pipeline writes it at LIVE_VIEW_FPS)
+                with _shared_frame_lock:
+                    jpeg = _shared_frame
+
+                if jpeg is not None:
+                    yield (
+                        b'--frame\r\n'
+                        b'Content-Type: image/jpeg\r\n\r\n'
+                        + jpeg
+                        + b'\r\n'
+                    )
+                    time.sleep(0.033)  # ~30fps max (avoid CPU spin)
+                else:
+                    # No pipeline frames yet — try direct camera as fallback
+                    capture = get_webcam_capture()
+                    if capture and capture.isOpened():
+                        for _ in range(2):
+                            capture.grab()
+                        ret, frame = capture.read()
+                        if ret and frame is not None:
+                            encode_params = [cv2.IMWRITE_JPEG_QUALITY, 55]
+                            _, jpeg = cv2.imencode('.jpg', frame, encode_params)
+                            yield (
+                                b'--frame\r\n'
+                                b'Content-Type: image/jpeg\r\n\r\n'
+                                + jpeg.tobytes()
+                                + b'\r\n'
+                            )
                     time.sleep(0.1)
-                    continue
-
-                # Drain stale buffer frames for lowest latency
-                for _ in range(2):
-                    capture.grab()
-
-                ret, frame = capture.read()
-                if not ret or frame is None:
-                    time.sleep(0.01)
-                    continue
-
-                # Lower JPEG quality = smaller frames = lower latency
-                encode_params = [cv2.IMWRITE_JPEG_QUALITY, 55]
-                _, jpeg = cv2.imencode('.jpg', frame, encode_params)
-
-                yield (
-                    b'--frame\r\n'
-                    b'Content-Type: image/jpeg\r\n\r\n'
-                    + jpeg.tobytes()
-                    + b'\r\n'
-                )
 
             except Exception as e:
                 logger.error(f"MJPEG stream error: {e}")

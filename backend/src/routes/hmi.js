@@ -60,9 +60,9 @@ router.post('/command', async (req, res) => {
       return res.status(404).json({ error: `Device not found: ${device_id}` });
     }
 
-    // Publish command to MQTT
+    // Publish command to MQTT (best-effort for log_trigger, required for others)
     const published = publishCommand(device_id, action);
-    if (!published) {
+    if (!published && action !== 'log_trigger') {
       return res.status(503).json({ error: 'MQTT broker not connected' });
     }
 
@@ -73,12 +73,35 @@ router.post('/command', async (req, res) => {
       [devices[0].id, req.user.id, action]
     );
 
+    // For log_trigger: also call the OCR backend to commit via state machine
+    let ocrResult = null;
+    if (action === 'log_trigger') {
+      try {
+        const INTERNAL_KEY = process.env.INTERNAL_API_KEY || 'pineapple-internal-key-change-me';
+        const resp = await fetch('http://localhost:8000/api/pipeline/manual-log', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-internal-key': INTERNAL_KEY,
+          },
+          body: JSON.stringify({ device_id }),
+        });
+        const raw = await resp.json();
+        // FastAPI wraps HTTPException responses in {"detail": {...}} — unwrap it
+        ocrResult = raw.detail || raw;
+      } catch (err) {
+        console.warn('[HMI] OCR backend unreachable for manual log:', err.message);
+        ocrResult = { success: false, reason: 'ocr_backend_unreachable' };
+      }
+    }
+
     res.json({
       ok: true,
       command_id: logRows[0].id,
       device_id,
       action,
       status: 'pending',
+      ...(ocrResult ? { ocr_result: ocrResult } : {}),
     });
   } catch (err) {
     console.error('[HMI] Command error:', err);

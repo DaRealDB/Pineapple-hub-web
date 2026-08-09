@@ -56,9 +56,15 @@ class ConnectionManager:
             if websocket in self._connections:
                 self._connections.remove(websocket)
 
-        logger.info(
-            f"WebSocket client disconnected (total: {len(self._connections)})"
-        )
+        remaining = len(self._connections)
+        logger.info(f"WebSocket client disconnected (total: {remaining})")
+
+        # Log when last client leaves — pipeline may auto-stop
+        if remaining == 0:
+            logger.info(
+                "Last WebSocket client disconnected — no live viewers. "
+                "Pipeline continues running; stop it via API when needed."
+            )
 
     async def broadcast(self, message: Dict[str, Any]) -> None:
         """Broadcast a JSON message to all connected clients."""

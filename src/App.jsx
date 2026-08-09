@@ -1,18 +1,20 @@
-import { useEffect, useState } from 'react';
-import { Routes, Route, useLocation } from 'react-router-dom';
+import { useEffect, useState, useCallback } from 'react';
+import { Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import LoginPage from './components/LoginPage';
 import RegisterPage from './components/RegisterPage';
 import ProtectedRoute from './components/ProtectedRoute';
+import ErrorBoundary from './components/ErrorBoundary';
 import LiveGrading from './screens/LiveGrading';
 import OperationsLog from './screens/OperationsLog';
-import Analytics from './screens/Analytics';
 import DeviceManagement from './screens/DeviceManagement';
 import Reports from './screens/Reports';
 import useMqtt from './hooks/useMqtt';
 import { useAuth } from './context/AuthContext';
 import { PERM } from './constants/permissions';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 /**
  * TopBar variant mapping per BUILD_SPEC.md Global Shell > TopBar.
@@ -26,6 +28,7 @@ function getTopBarVariant(pathname) {
 export default function App() {
   const location = useLocation();
   const { isAuthenticated } = useAuth();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const {
     connectionState,
     availability,
@@ -41,6 +44,29 @@ export default function App() {
     deviceState,
     publishDeviceCommand,
   } = useMqtt();
+
+  /**
+   * Log trigger via Express API → OCR backend (not MQTT).
+   * Returns the response JSON so HMIPanel can show success/failure feedback.
+   */
+  const publishLogTrigger = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return null;
+    try {
+      const res = await fetch(`${API_BASE}/api/hmi/command`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ device_id: 'scale1', action: 'log_trigger' }),
+      });
+      return await res.json();
+    } catch (err) {
+      console.warn('[LogTrigger] API call failed:', err.message);
+      return null;
+    }
+  }, []);
 
   const [deviceLocation, setDeviceLocation] = useState(null);
 
@@ -80,6 +106,7 @@ export default function App() {
     publishSwitchCommand,
     deviceState,
     publishDeviceCommand,
+    publishLogTrigger,
   };
 
   // Login & register pages — no shell. useMqtt() stays at the top level (rules of hooks),
@@ -95,14 +122,15 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-background">
-      <Sidebar availability={availability} />
+      <Sidebar availability={availability} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
       <TopBar
         variant={topBarVariant}
         connectionState={connectionState}
         deviceLocation={deviceLocation}
       />
-      <main className="ml-60 p-lg min-h-[calc(100vh-64px)] bg-background">
-        <Routes>
+      <main className={`p-lg min-h-[calc(100vh-64px)] bg-background transition-all ${sidebarCollapsed ? 'ml-16' : 'ml-60'}`}>
+        <ErrorBoundary>
+          <Routes>
           <Route
             path="/"
             element={
@@ -119,14 +147,7 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-          <Route
-            path="/analytics"
-            element={
-              <ProtectedRoute permission={PERM.ANALYTICS_VIEW_BASIC}>
-                <Analytics mqtt={mqttContext} />
-              </ProtectedRoute>
-            }
-          />
+          <Route path="/analytics" element={<Navigate to="/reports" replace />} />
           <Route
             path="/devices"
             element={
@@ -152,7 +173,8 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-        </Routes>
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   );

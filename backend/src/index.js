@@ -7,6 +7,8 @@ import authRoutes from './routes/auth.js';
 import deviceRoutes from './routes/devices.js';
 import crateLogRoutes from './routes/crateLogs.js';
 import hmiRoutes from './routes/hmi.js';
+import analyticsRoutes from './routes/analytics.js';
+import reportsRoutes from './routes/reports.js';
 
 const app = express();
 
@@ -24,6 +26,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/crate-logs', crateLogRoutes);
 app.use('/api/hmi', hmiRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/reports', reportsRoutes);
 
 // Start
 async function start() {

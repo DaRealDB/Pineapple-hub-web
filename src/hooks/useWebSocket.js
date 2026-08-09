@@ -19,41 +19,26 @@ export default function useWebSocket() {
   console.log('[useWebSocket] Hook called');
   const wsUrl = import.meta.env.VITE_OCR_WS_URL;
   console.log('[useWebSocket] VITE_OCR_WS_URL:', wsUrl);
-  
-  // Ensure WebSocket URL ends with /ws
-  const wsEndpoint = wsUrl.endsWith('/ws') ? wsUrl : `${wsUrl}/ws`;
-  console.log('[useWebSocket] Connecting to:', wsEndpoint);
-  
-  // Validate WebSocket URL
-  if (!wsUrl) {
-    console.error('[useWebSocket] VITE_OCR_WS_URL not configured');
-    return {
-      connectionState: 'error',
-      connectionError: 'WebSocket URL not configured — check VITE_OCR_WS_URL in .env',
-      ocrResults: [],
-      pipelineStatus: null,
-      webcamFrame: null,
-      deduplicationAlerts: [],
-      sendMessage: () => {},
-    };
-  }
 
-  if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
-    console.error('[useWebSocket] Invalid WebSocket URL format:', wsUrl);
-    return {
-      connectionState: 'error',
-      connectionError: `Invalid WebSocket URL: ${wsUrl} — must start with ws:// or wss://`,
-      ocrResults: [],
-      pipelineStatus: null,
-      webcamFrame: null,
-      deduplicationAlerts: [],
-      sendMessage: () => {},
-    };
-  }
+  // Validate WebSocket URL (must happen BEFORE any hook calls to avoid
+  // rules-of-hooks violations — derived booleans computed from a build-time
+  // constant so they never change between renders).
+  const wsConfigured = !!wsUrl;
+  const wsValid =
+    wsConfigured &&
+    (wsUrl.startsWith('ws://') || wsUrl.startsWith('wss://'));
+
+  // Ensure WebSocket URL ends with /ws
+  const wsEndpoint = wsConfigured
+    ? (wsUrl.endsWith('/ws') ? wsUrl : `${wsUrl}/ws`)
+    : null;
+
+  // ═══ All hooks must be called unconditionally (Rules of Hooks) ═══
 
   const clientRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const reconnectAttempts = useRef(0);
+  const mountedRef = useRef(true);  // prevents reconnection after unmount
   const MAX_RECONNECT_ATTEMPTS = 5;
 
   const [connectionState, setConnectionState] = useState(
@@ -63,6 +48,8 @@ export default function useWebSocket() {
   const [pipelineStatus, setPipelineStatus] = useState(null);
   const [webcamFrame, setWebcamFrame] = useState(null);
   const [deduplicationAlerts, setDeduplicationAlerts] = useState([]);
+  const [yoloDetections, setYoloDetections] = useState(null);
+  const [crateState, setCrateState] = useState(null);
 
   const handleConnect = useCallback(() => {
     console.log('[useWebSocket] Connected');
@@ -111,6 +98,18 @@ export default function useWebSocket() {
             console.log('[useWebSocket] Deduplication alert added');
           }
           break;
+        case 'yolo_detections':
+          if (data.payload && typeof data.payload === 'object') {
+            setYoloDetections(data.payload);
+            console.log('[useWebSocket] YOLO detections updated');
+          }
+          break;
+        case 'crate_state':
+          if (data.payload && typeof data.payload === 'object') {
+            setCrateState(data.payload);
+            console.log('[useWebSocket] Crate state updated:', data.payload.state);
+          }
+          break;
         case 'connection_established':
           // Handshake confirmation — no action needed
           break;
@@ -125,7 +124,13 @@ export default function useWebSocket() {
   const handleClose = useCallback(() => {
     console.log('[useWebSocket] Disconnected');
     setConnectionState('offline');
-    
+
+    // Stop reconnecting if component unmounted
+    if (!mountedRef.current) {
+      console.log('[useWebSocket] Component unmounted — skipping reconnection');
+      return;
+    }
+
     // Attempt reconnection with exponential backoff
     if (reconnectAttempts.current < MAX_RECONNECT_ATTEMPTS) {
       const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
@@ -146,18 +151,47 @@ export default function useWebSocket() {
   }, [wsEndpoint, handleConnect]);
 
   useEffect(() => {
+    if (!wsValid || !wsEndpoint) {
+      console.warn('[useWebSocket] Skipping connection — URL not configured or invalid');
+      return;
+    }
+
     console.log('[useWebSocket] Setting up WebSocket connection to:', wsEndpoint);
     const client = new WebSocket(wsEndpoint);
 
     clientRef.current = client;
 
-    client.onopen = handleConnect;
-    client.onclose = handleClose;
-    client.onerror = handleError;
+    // ── Connection timeout: 10s ──────────────────────────────────
+    // Native WebSocket has no built-in timeout — a refused connection
+    // can hang in CONNECTING state indefinitely on some platforms.
+    const connectTimeout = setTimeout(() => {
+      if (client.readyState === WebSocket.CONNECTING) {
+        console.warn('[useWebSocket] Connection timed out after 10s');
+        setConnectionState('error');
+        client.close();
+      }
+    }, 10000);
+
+    client.onopen = () => {
+      clearTimeout(connectTimeout);
+      handleConnect();
+    };
+    client.onclose = (event) => {
+      clearTimeout(connectTimeout);
+      console.log('[useWebSocket] Close event — code:', event?.code);
+      handleClose();
+    };
+    client.onerror = (err) => {
+      clearTimeout(connectTimeout);
+      console.error('[useWebSocket] Error event:', err?.type || err);
+      handleError(err);
+    };
     client.onmessage = handleMessage;
 
     return () => {
+      clearTimeout(connectTimeout);
       console.log('[useWebSocket] Cleaning up WebSocket');
+      mountedRef.current = false;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
@@ -165,7 +199,7 @@ export default function useWebSocket() {
         client.close();
       }
     };
-  }, [wsEndpoint, handleConnect, handleClose, handleError, handleMessage]);
+  }, [wsEndpoint, wsValid, handleConnect, handleClose, handleError, handleMessage]);
 
   /**
    * Send a message to the WebSocket server
@@ -189,12 +223,22 @@ export default function useWebSocket() {
     }
   }, []);
 
-  console.log('[useWebSocket] Returning state:', { connectionState, ocrResultsCount: ocrResults.length });
+  // Derive connection error from validation state
+  const connectionError = !wsConfigured
+    ? 'WebSocket URL not configured — check VITE_OCR_WS_URL in .env'
+    : !wsValid
+      ? `Invalid WebSocket URL: ${wsUrl} — must start with ws:// or wss://`
+      : null;
+
+  // Derive effective connection state (overridden when URL is invalid)
+  const effectiveConnState = !wsValid ? 'error' : connectionState;
+
+  console.log('[useWebSocket] Returning state:', { connectionState: effectiveConnState, ocrResultsCount: ocrResults.length });
   return {
     /** @type {WebSocketConnectionState} */
-    connectionState,
+    connectionState: effectiveConnState,
     /** Human-readable error when connection fails (null when OK) */
-    connectionError: null,
+    connectionError,
     /** Array of recent OCR results */
     ocrResults,
     /** Current pipeline status and metrics */
@@ -203,6 +247,10 @@ export default function useWebSocket() {
     webcamFrame,
     /** Array of deduplication alerts */
     deduplicationAlerts,
+    /** Latest YOLO detection results */
+    yoloDetections,
+    /** Crate logging state machine status */
+    crateState,
     /** Send message to WebSocket server */
     sendMessage,
   };

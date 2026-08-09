@@ -4,40 +4,31 @@ import { useAuth } from '../context/AuthContext';
 import { PERM } from '../constants/permissions';
 
 const TIMEOUT_MS = 5000;
+const card = 'bg-surface-container border border-outline-variant rounded p-lg';
+const cardTitle = 'font-label-caps text-label-caps text-on-surface-variant';
 
 /**
- * HMI Panel — replaces the placeholder SwitchPanel with real device controls.
- * Each button publishes a command over MQTT and waits for device_state confirmation.
- *
- * RBAC: employees see nothing; supervisors see all controls; admins see all controls.
+ * HMI Panel — industrial control tiles for Scale 04.
+ * Consistent styling: active=primary highlight, inactive=neutral, error=red.
  */
-export default function HMIPanel({ deviceState, publishDeviceCommand, isLive }) {
+export default function HMIPanel({ deviceState, publishDeviceCommand, isLive, crateState, publishLogTrigger }) {
   const { hasPermission } = useAuth();
-
   const canControl = hasPermission(PERM.HMI_CONTROL);
   const canLogTrigger = hasPermission(PERM.HMI_LOG_TRIGGER);
 
-  // Hide entire panel from employees
-  if (!canControl && !canLogTrigger) {
-    return null;
-  }
+  if (!canControl && !canLogTrigger) return null;
 
   return (
-    <div className="bg-surface-container border border-outline-variant rounded p-lg">
-      <div className="flex items-center justify-between mb-lg">
-        <h3 className="font-label-caps text-label-caps text-on-surface-variant">
-          DEVICE CONTROLS — SCALE 04
-        </h3>
-        <StatusPill
-          variant={isLive ? 'online' : 'offline'}
-          label={isLive ? 'MQTT LIVE' : 'MQTT OFFLINE'}
-        />
+    <div className={card}>
+      <div className="flex items-center justify-between mb-md">
+        <h3 className={cardTitle}>DEVICE CONTROLS — SCALE 04</h3>
+        <StatusPill variant={isLive ? 'online' : 'offline'} label={isLive ? 'MQTT LIVE' : 'MQTT OFFLINE'} />
       </div>
 
       <div className="grid grid-cols-2 gap-sm">
         {canControl && (
           <>
-            <HMIButton
+            <ControlTile
               label="POWER"
               icon="power_settings_new"
               action="power"
@@ -47,7 +38,7 @@ export default function HMIPanel({ deviceState, publishDeviceCommand, isLive }) 
               onLabel="ON"
               offLabel="OFF"
             />
-            <HMIButton
+            <ControlTile
               label="TARE"
               icon="scale"
               action="tare"
@@ -56,50 +47,47 @@ export default function HMIPanel({ deviceState, publishDeviceCommand, isLive }) 
               isLive={isLive}
               isMomentary
             />
-            <HMIButton
+            <ControlTile
               label="MODE"
               icon="tune"
               action="mode"
               currentState={deviceState?.mode || 'auto'}
               publish={publishDeviceCommand}
               isLive={isLive}
-              displayValue={deviceState?.mode || 'AUTO'}
+              displayValue={deviceState?.mode || 'g'}
             />
           </>
         )}
         {canLogTrigger && (
-          <HMIButton
+          <ControlTile
             label="LOG TRIGGER"
             icon="note_add"
             action="log_trigger"
             currentState={deviceState?.log_trigger_count ?? 0}
-            publish={publishDeviceCommand}
+            publish={publishLogTrigger || publishDeviceCommand}
             isLive={isLive}
             isMomentary
+            crateState={crateState}
           />
         )}
       </div>
-
-      <p className="font-body-md text-[11px] text-on-surface-variant/50 mt-md text-center">
-        Commands are sent over MQTT and confirmed via device_state
-      </p>
     </div>
   );
 }
 
-/**
- * Single HMI button with pending/timeout state.
- */
-function HMIButton({
+// ── Control Tile ──────────────────────────────────────────────────────
+
+function ControlTile({
   label, icon, action, currentState, publish, isLive,
   isMomentary = false, onLabel = 'ON', offLabel = 'OFF', displayValue,
+  crateState = null,
 }) {
   const [pending, setPending] = useState(false);
   const [timedOut, setTimedOut] = useState(false);
+  const [feedback, setFeedback] = useState(null);
   const prevState = useRef(currentState);
   const timeoutRef = useRef(null);
 
-  // Clear pending when device state changes
   useEffect(() => {
     if (pending && currentState !== prevState.current) {
       setPending(false);
@@ -109,11 +97,32 @@ function HMIButton({
     prevState.current = currentState;
   }, [currentState, pending]);
 
-  function handleClick() {
+  async function handleClick() {
     if (!isLive || pending) return;
     setPending(true);
     setTimedOut(false);
-    publish(action);
+    setFeedback(null);
+
+    try {
+      const result = await publish(action);
+      if (result?.ocr_result) {
+        if (result.ocr_result.success) {
+          setFeedback({ type: 'success', text: `LOGGED: ${result.ocr_result.batch_id || 'OK'}` });
+          setPending(false);
+        } else {
+          const reason = result.ocr_result.reason === 'not_ready'
+            ? `NEED: ${(result.ocr_result.missing || []).join(', ') || 'DATA'}`
+            : (result.ocr_result.reason || 'FAILED');
+          setFeedback({ type: 'error', text: reason });
+          setTimedOut(true);
+          setPending(false);
+        }
+        setTimeout(() => setFeedback(null), 4000);
+        return;
+      }
+    } catch {
+      // Fall through to timeout
+    }
 
     timeoutRef.current = setTimeout(() => {
       setPending(false);
@@ -121,42 +130,57 @@ function HMIButton({
     }, TIMEOUT_MS);
   }
 
-  // Cleanup timeout
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    };
-  }, []);
+  useEffect(() => () => { if (timeoutRef.current) clearTimeout(timeoutRef.current); }, []);
 
   const isActive = currentState === 'on' || currentState === true;
+  const isError = timedOut;
 
   return (
     <button
       onClick={handleClick}
       disabled={!isLive || pending}
-      className={`flex flex-col items-center gap-xs p-md rounded border transition-all
+      className={`flex flex-col items-center gap-1 p-md rounded-lg border transition-all select-none
         ${isActive && !isMomentary
-          ? 'bg-[#10B981]/10 border-[#10B981]/30'
-          : 'bg-surface-container-low border-outline-variant hover:border-primary/50'
+          ? 'bg-primary/10 border-primary/40'
+          : 'bg-surface-container-low border-outline-variant hover:border-primary/40'
         }
-        ${timedOut ? 'border-[#EF4444]/50 bg-[#EF4444]/5' : ''}
-        ${pending ? 'border-tertiary/50 animate-pulse' : ''}
-        disabled:opacity-30 disabled:cursor-not-allowed`}
+        ${isError ? 'border-[#EF4444]/50 bg-[#EF4444]/5' : ''}
+        ${pending ? 'border-primary/50 animate-pulse' : ''}
+        disabled:opacity-40 disabled:cursor-not-allowed`}
     >
-      <span className={`material-symbols-outlined text-2xl ${
-        timedOut ? 'text-[#EF4444]' : isActive ? 'text-[#10B981]' : 'text-on-surface-variant'
+      {/* Icon */}
+      <span className={`material-symbols-outlined text-xl ${
+        isError ? 'text-[#EF4444]' : isActive && !isMomentary ? 'text-primary' : 'text-on-surface-variant'
       }`}>
         {icon}
       </span>
+
+      {/* Label */}
       <span className="font-label-caps text-[10px] text-on-surface-variant">{label}</span>
-      {pending ? (
+
+      {/* State line */}
+      {feedback ? (
+        <span className={`font-data-mono text-[10px] leading-tight text-center ${feedback.type === 'success' ? 'text-[#10B981]' : 'text-[#EF4444]'}`}>
+          {feedback.text}
+        </span>
+      ) : pending ? (
         <StatusPill variant="pending" label="PENDING" />
-      ) : timedOut ? (
+      ) : isError ? (
         <StatusPill variant="offline" label="TIMEOUT" />
       ) : isMomentary ? (
-        <span className="font-data-mono text-xs text-on-surface-variant">PRESS</span>
+        <>
+          {action === 'log_trigger' && crateState ? (
+            <span className={`font-data-mono text-[10px] ${
+              crateState.state === 'READY' ? 'text-[#10B981]' : crateState.state === 'AWAITING_DATA' ? 'text-[#F59E0B]' : 'text-on-surface-variant/50'
+            }`}>
+              {crateState.state === 'READY' ? 'READY' : crateState.state === 'AWAITING_DATA' ? 'PARTIAL' : 'IDLE'}
+            </span>
+          ) : (
+            <span className="font-data-mono text-[10px] text-on-surface-variant/50">PRESS</span>
+          )}
+        </>
       ) : (
-        <span className={`font-data-mono text-xs ${isActive ? 'text-[#10B981]' : 'text-on-surface-variant'}`}>
+        <span className={`font-data-mono text-xs ${isActive ? 'text-primary font-bold' : 'text-on-surface-variant'}`}>
           {displayValue || (isActive ? onLabel : offLabel)}
         </span>
       )}

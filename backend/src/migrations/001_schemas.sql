@@ -28,7 +28,7 @@ CREATE TABLE grading.crate_logs (
   zone2_status_at_capture TEXT NOT NULL CHECK (zone2_status_at_capture IN ('clear','occupied','unknown')),
   ocr_extracted_id    TEXT,
   ocr_confidence      NUMERIC(5,2),
-  capture_trigger     TEXT NOT NULL CHECK (capture_trigger IN ('auto_zone', 'manual_button')),
+  capture_trigger     TEXT NOT NULL CHECK (capture_trigger IN ('auto_zone', 'manual_button', 'hand_wave', 'auto_countdown')),
   audit_status        TEXT NOT NULL DEFAULT 'pending' CHECK (audit_status IN ('pending','confirmed','flagged')),
   captured_at         TIMESTAMPTZ NOT NULL,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now()

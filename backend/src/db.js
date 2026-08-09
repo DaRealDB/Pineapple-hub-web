@@ -7,8 +7,18 @@ export const pool = new Pool({
   connectionString: config.databaseUrl,
 });
 
+// Second pool for the OCR pipeline database (analytics queries)
+const ocrDbUrl = config.ocrDatabaseUrl || config.databaseUrl.replace(/\/[^/]+$/, '/ocr_pipeline');
+export const ocrPool = new Pool({
+  connectionString: ocrDbUrl,
+});
+
 pool.on('error', (err) => {
   console.error('[DB] Unexpected pool error:', err);
+});
+
+ocrPool.on('error', (err) => {
+  console.error('[DB] OCR pool error:', err);
 });
 
 /**
@@ -19,6 +29,18 @@ pool.on('error', (err) => {
  */
 export async function query(sql, params = []) {
   const client = await pool.connect();
+  try {
+    return await client.query(sql, params);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Run a query against the OCR pipeline database.
+ */
+export async function ocrQuery(sql, params = []) {
+  const client = await ocrPool.connect();
   try {
     return await client.query(sql, params);
   } finally {

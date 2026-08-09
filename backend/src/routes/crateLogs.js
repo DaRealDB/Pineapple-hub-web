@@ -5,7 +5,17 @@ import { requirePermission } from '../middleware/rbac.js';
 
 const router = Router();
 
-router.use(authenticate);
+// Service key for backend-to-backend calls (OCR pipeline → Express)
+const INTERNAL_KEY = process.env.INTERNAL_API_KEY || 'pineapple-internal-key-change-me';
+
+// Allow service key to bypass JWT auth
+router.use((req, res, next) => {
+  if (req.headers['x-internal-key'] === INTERNAL_KEY) {
+    req.user = { id: null, role: 'service', email: 'ocr-backend@internal' };
+    return next();
+  }
+  authenticate(req, res, next);
+});
 
 /**
  * GET /api/crate-logs
@@ -84,7 +94,7 @@ router.get('/', requirePermission('operations_log.view'), async (req, res) => {
  * Requires: any authenticated user (auto_zone capture) or hmi.log_trigger (manual_button)
  */
 router.post('/', async (req, res, next) => {
-  // manual_button requires explicit permission; auto_zone is allowed for any auth user
+  // manual_button requires explicit permission; auto_zone + hand_wave are allowed for any auth user
   if (req.body.capture_trigger === 'manual_button') {
     return requirePermission('hmi.log_trigger')(req, res, next);
   }
